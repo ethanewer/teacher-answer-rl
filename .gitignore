@@ -203,3 +203,8 @@ wandb/
 outputs/
 sympy/
 !/docs/figures/*
+
+# RLVR demo generated artifacts
+rlvr_demo/data/*.jsonl
+rlvr_demo/results/
+rlvr_demo/**/__pycache__/
