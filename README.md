@@ -8,6 +8,40 @@ The working code lives under `AReaL/rlvr_demo`. Runtime logs, rollout dumps, and
 checkpoints are written to `/NHNHOME/areal_runs/qwen3-gsm8k-rlvr` and are not
 committed.
 
+## AIME-2026 Targeted Result
+
+The AIME-2026 extension is documented in
+`AReaL/rlvr_demo/AIME_2026_EXPERIMENTS.md`. It adds
+`MathArena/aime_2026` as a final benchmark and uses only training prompts from
+2025 or earlier. `Qwen/Qwen3-0.6B` scored 0/30 on AIME-2026 in short baseline
+checks, so the final targeted recipes use `Qwen/Qwen3-1.7B`.
+
+Final AIME-2026 generated-answer results over seeds 7, 13, and 21:
+
+| Model / checkpoint | Seed 7 | Seed 13 | Seed 21 | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Base `Qwen/Qwen3-1.7B` | 2/30 | 2/30 | 0/30 | 4/90 = 4.44% |
+| GRPO step 299 | 3/30 | 3/30 | 4/30 | 10/90 = 11.11% |
+| RFT-SFT step 199 | 2/30 | 2/30 | 2/30 | 6/90 = 6.67% |
+
+Recommended AIME-2026 recipes:
+
+- GRPO: `AReaL/rlvr_demo/configs/qwen3_17b_aime_hardmath_correct_grpo_b200_dev_300.yaml`.
+  This uses AReaL with a Megatron actor and SGLang rollouts on a 2+2 B200 split.
+- SFT: `AReaL/rlvr_demo/configs/qwen3_17b_aime_rollout_rft_sft_b200_300.yaml`.
+  This is supervised distillation from verifier-correct GRPO rollouts over the
+  same clean pre-2026 prompt set.
+
+Run the split audit with:
+
+```bash
+cd /NHNHOME/PROJECT/wbl-workspace/ewer/rl-test/AReaL
+.venv/bin/python -m rlvr_demo.audit_aime2026_splits
+```
+
+The reviewed audit found 0 exact AIME-2026 train/test overlaps, 0 fuzzy matches
+above 0.90, and 0 RFT-SFT prompts outside the GRPO training prompt set.
+
 ## Reviewed Mixed-Difficulty Math Result
 
 The harder mixed-math extension is documented in
