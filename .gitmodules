@@ -1,3 +1,4 @@
 [submodule "AReaL"]
 	path = AReaL
-	url = https://github.com/inclusionAI/AReaL.git
+	url = git@github.com:ethanewer/teacher-answer-rl.git
+	branch = areal-submodule
