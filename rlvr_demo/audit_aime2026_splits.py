@@ -125,6 +125,27 @@ def _comparison(
     }
 
 
+def _collect_failures(report: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    subset = report["rft_subset_check"]
+    if int(subset["rft_questions_not_in_grpo_train"]) != 0:
+        failures.append("RFT-SFT prompts are not a subset of the GRPO training prompts")
+
+    comparisons: list[dict[str, Any]] = list(report["against_aime_2026"])
+    for group in report["dev_holdout_checks"].values():
+        comparisons.extend(group)
+
+    for item in comparisons:
+        name = str(item["name"])
+        exact_overlap = int(item["exact_overlap"])
+        fuzzy_count = int(item["fuzzy"]["pairs_at_or_above_threshold"])
+        if exact_overlap:
+            failures.append(f"{name} has {exact_overlap} exact held-out overlaps")
+        if fuzzy_count:
+            failures.append(f"{name} has {fuzzy_count} fuzzy held-out overlaps")
+    return failures
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=7)
@@ -139,6 +160,11 @@ def main() -> None:
         default=Path("rlvr_demo/data/deepseek_v4_pro_aime_1983_2025_sft.jsonl"),
     )
     parser.add_argument("--fuzzy-threshold", type=float, default=0.90)
+    parser.add_argument(
+        "--fail-on-overlap",
+        action="store_true",
+        help="Exit nonzero on any exact overlap, fuzzy overlap, or RFT subset violation.",
+    )
     args = parser.parse_args()
 
     grpo_train = load_math_records(GRPO_TRAIN_SOURCES, args.seed)
@@ -191,6 +217,10 @@ def main() -> None:
         },
     }
     print(json.dumps(report, indent=2, sort_keys=True))
+    failures = _collect_failures(report)
+    if args.fail_on_overlap and failures:
+        print(json.dumps({"audit_failures": failures}, indent=2, sort_keys=True))
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

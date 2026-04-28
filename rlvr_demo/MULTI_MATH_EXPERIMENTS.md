@@ -77,7 +77,8 @@ Audit command:
 
 ```bash
 .venv/bin/python -m rlvr_demo.audit_multi_math_splits \
-  --deepseek-jsonl rlvr_demo/data/deepseek_v4_pro_multi_math_balanced_sft.jsonl
+  --deepseek-jsonl rlvr_demo/data/deepseek_v4_pro_multi_math_balanced_sft.jsonl \
+  --fail-on-overlap
 ```
 
 Reviewed audit, seed 7:
@@ -105,8 +106,8 @@ DeepSeek SFT teacher data:
 | Split | GSM8K | MATH L1/2 | MATH L3 | MATH L4/5 |
 | --- | ---: | ---: | ---: | ---: |
 | Verified JSONL rows before shared-validation filter | 959 | 781 | 726 | 739 |
-| Verified rows after shared-validation filter | 834 | 766 | 701 | 734 |
-| DeepSeek SFT train | 802 | 734 | 669 | 702 |
+| Verified rows after shared-validation filter | 945 | 757 | 702 | 729 |
+| DeepSeek SFT train | 913 | 725 | 670 | 697 |
 | DeepSeek SFT validation | 32 | 32 | 32 | 32 |
 
 Overlap checks from the reviewed audit:
@@ -123,7 +124,7 @@ Overlap checks from the reviewed audit:
 | DeepSeek SFT validation vs shared validation | 0 |
 | DeepSeek SFT validation vs official test | 0 |
 
-The raw DeepSeek JSONL still contains 170 verified rows that overlap the shared
+The raw DeepSeek JSONL still contains 72 verified rows that overlap the shared
 validation holdout because they were generated during an earlier exploratory
 pass. The SFT dataset loader filters them out, and the current generator samples
 from the GRPO training pool so fresh regeneration avoids this overlap.

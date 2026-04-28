@@ -6,6 +6,13 @@ problems from 2025 or earlier. The GRPO recipe uses AReaL with a Megatron actor
 and SGLang rollouts. The SFT recipe uses AReaL Megatron SFT on verifier-correct
 rollouts produced by the clean GRPO training prompt set.
 
+Reviewer verdict: these are useful technical baselines and reproducibility
+recipes, but the AIME-2026 numbers should be reported as exploratory baselines,
+not as a sealed paper benchmark. AIME-2026 was not used in training or scheduled
+checkpoint selection, but it was used during recipe iteration in this project.
+A paper should freeze these recipes before evaluating on a newer untouched
+benchmark, or explicitly label these AIME-2026 results as development-informed.
+
 All commands assume:
 
 ```bash
@@ -61,7 +68,18 @@ Held out from the GRPO training prompt set:
 
 - AIME 2024, used as a development holdout.
 - AIME 2025, used as a development holdout.
-- AIME 2026, used only as final test.
+
+The GRPO training config does not load AIME-2026 at training time. A separate
+audit checks exact and fuzzy overlap against AIME-2026. Removing the earlier
+defensive AIME-2026 heldout entry from the training config changed 0 training
+prompts:
+
+| Check | Count |
+| --- | ---: |
+| Deduped source rows | 6,442 |
+| Rows after AIME-2024/2025 holdout removal | 6,442 |
+| Rows after AIME-2024/2025/2026 holdout removal | 6,442 |
+| Symmetric difference | 0 |
 
 Final SFT data:
 
@@ -77,7 +95,9 @@ Final SFT data:
   --rollout-dir /NHNHOME/areal_runs/qwen3-gsm8k-rlvr/logs/ewer/qwen3-17b-aime-hardmath-correct-grpo-b200-dev-300-r1/trial0/rollout \
   --output rlvr_demo/data/qwen3_17b_hardmath_grpo_correct_rollout_sft_max2.jsonl \
   --max-per-question 2 \
-  --seed 7
+  --seed 7 \
+  --allowed-source-preset aime_hardmath_pre2024 \
+  --fail-on-disallowed
 ```
 
 This SFT recipe is best described as RFT-style supervised distillation. It is a
@@ -85,6 +105,9 @@ useful supervised baseline for the same clean prompt distribution, but it is not
 an independent teacher-data baseline. Independent official-solution and
 DeepSeek-teacher SFT attempts did not consistently improve AIME-2026 in these
 short runs.
+
+The strict extractor check on the reproducibility rollout logs selected 5,326
+rows over 2,815 unique prompts and skipped 0 disallowed reward-passing rollouts.
 
 Generated JSONL files, rollouts, checkpoints, and evaluation outputs are runtime
 artifacts and are ignored by git.
@@ -94,7 +117,7 @@ artifacts and are ignored by git.
 Run:
 
 ```bash
-.venv/bin/python -m rlvr_demo.audit_aime2026_splits
+.venv/bin/python -m rlvr_demo.audit_aime2026_splits --fail-on-overlap
 ```
 
 Reviewed audit summary, seed 7, fuzzy threshold 0.90:
@@ -117,6 +140,18 @@ Additional checks:
 
 The subset check is the main guardrail for the SFT data: the supervised rows are
 only drawn from the GRPO training prompt set, not from eval rollouts.
+
+For the rerun RFT-SFT JSONL:
+
+```bash
+.venv/bin/python -m rlvr_demo.audit_aime2026_splits \
+  --rft-jsonl rlvr_demo/data/qwen3_17b_hardmath_grpo_correct_rollout_sft_repro1_max2.jsonl \
+  --fail-on-overlap
+```
+
+This also passed: the rerun RFT-SFT set had 2,815 unique prompts, 0 exact
+AIME-2026 overlap, 0 fuzzy pairs above 0.90, and 0 prompts outside the GRPO
+training prompt set.
 
 ## GRPO Recipe
 
@@ -223,9 +258,25 @@ Reviewed AIME-2026 results:
 | GRPO step 299 | 3/30 | 3/30 | 4/30 | 10/90 = 11.11% |
 | RFT-SFT step 199 | 2/30 | 2/30 | 2/30 | 6/90 = 6.67% |
 
-Both final recipes improve the three-seed aggregate over the base model. GRPO is
-the stronger recipe. RFT-SFT is weaker but has no seed-level regression against
-the base seeds tested here.
+Point estimates improve over the base model, but the benchmark has only 30
+problems, so paper claims should include uncertainty and paired comparisons.
+GRPO is the stronger recipe. RFT-SFT is weaker and should be described as
+rollout-distillation rather than an independent SFT baseline.
+
+Original three-seed statistical summary:
+
+| Group | Seeds | Correct | Accuracy | Wilson 95% CI |
+| --- | --- | ---: | ---: | --- |
+| Base | `[7, 13, 21]` | 4/90 | 4.44% | 1.74% to 10.88% |
+| GRPO step 299 | `[7, 13, 21]` | 10/90 | 11.11% | 6.15% to 19.26% |
+| RFT-SFT step 199 | `[7, 13, 21]` | 6/90 | 6.67% | 3.09% to 13.79% |
+
+Paired against base:
+
+| Candidate | Candidate-only correct | Base-only correct | Two-sided sign-test p |
+| --- | ---: | ---: | ---: |
+| GRPO step 299 | 6 | 0 | 0.0312 |
+| RFT-SFT step 199 | 3 | 1 | 0.6250 |
 
 Post-commit reproducibility rerun:
 
@@ -240,6 +291,24 @@ prompts. The SFT rerun trained on that freshly extracted JSONL and completed in
 89.84 seconds. Both reruns remain positive against the same base aggregate of
 4/90.
 
+Rerun statistical summary:
+
+| Group | Seeds | Correct | Accuracy | Wilson 95% CI |
+| --- | --- | ---: | ---: | --- |
+| Base | `[7, 13, 21]` | 4/90 | 4.44% | 1.74% to 10.88% |
+| GRPO rerun step 299 | `[7, 13, 21]` | 7/90 | 7.78% | 3.82% to 15.19% |
+| RFT-SFT rerun step 199 | `[7, 13, 21]` | 7/90 | 7.78% | 3.82% to 15.19% |
+
+Paired against base:
+
+| Candidate | Candidate-only correct | Base-only correct | Two-sided sign-test p |
+| --- | ---: | ---: | ---: |
+| GRPO rerun step 299 | 4 | 1 | 0.3750 |
+| RFT-SFT rerun step 199 | 3 | 0 | 0.2500 |
+
+These rerun p-values are not significant at conventional thresholds; they are
+positive reproducibility checks, not strong standalone evidence.
+
 Discarded checks:
 
 - Qwen3-0.6B base remained 0/30 at 1024 and 2048 new tokens.
@@ -251,7 +320,11 @@ Discarded checks:
 ## Reproducibility Notes
 
 - The benchmark is small, so report the exact seed list with any result.
-- The AIME-2026 test set is never used for scheduled checkpoint selection.
+- AIME-2026 is never used for training or scheduled checkpoint selection, but it
+  was used during recipe iteration. Do not claim these exact AIME-2026 numbers
+  are from a sealed final benchmark in a future paper.
 - Use AIME-2024/2025 only as development holdouts for recipe selection.
+- Use `rlvr_demo.summarize_aime2026_results` to report Wilson intervals and
+  paired sign tests whenever comparing recipes on AIME-2026.
 - Keep `rlvr_demo/data/*.jsonl`, `rlvr_demo/results/`, `/NHNHOME/areal_runs`,
   rollouts, and checkpoints out of git.

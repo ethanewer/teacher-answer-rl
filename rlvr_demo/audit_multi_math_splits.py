@@ -98,6 +98,11 @@ def main() -> None:
         type=Path,
         default=Path("rlvr_demo/data/deepseek_v4_pro_multi_math_balanced_sft.jsonl"),
     )
+    parser.add_argument(
+        "--fail-on-overlap",
+        action="store_true",
+        help="Exit nonzero if any final train/validation/test split overlap remains.",
+    )
     args = parser.parse_args()
 
     train_raw = load_math_records(TRAIN_SOURCES, args.seed)
@@ -167,6 +172,28 @@ def main() -> None:
         },
     }
     print(json.dumps(report, indent=2, sort_keys=True))
+    final_overlap_keys = [
+        "grpo_train_vs_validation",
+        "grpo_train_vs_test",
+        "grpo_validation_vs_test",
+        "sft_train_vs_validation",
+        "sft_train_vs_test",
+        "sft_validation_vs_test",
+        "deepseek_filtered_vs_shared_validation",
+        "deepseek_train_vs_validation",
+        "deepseek_train_vs_test",
+        "deepseek_validation_vs_test",
+        "deepseek_train_vs_shared_validation",
+        "deepseek_validation_vs_shared_validation",
+    ]
+    failures = {
+        key: int(report["overlap_checks"][key])
+        for key in final_overlap_keys
+        if int(report["overlap_checks"][key]) != 0
+    }
+    if args.fail_on_overlap and failures:
+        print(json.dumps({"audit_failures": failures}, indent=2, sort_keys=True))
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

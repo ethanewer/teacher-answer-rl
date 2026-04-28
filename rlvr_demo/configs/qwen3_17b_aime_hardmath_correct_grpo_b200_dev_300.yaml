@@ -168,8 +168,6 @@ train_dataset:
         max_year: 2024
       - name: aime_2025
         split: train
-      - name: aime_2026
-        split: train
 
 valid_dataset:
   batch_size: 60
