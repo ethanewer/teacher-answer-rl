@@ -8,7 +8,40 @@ The working code lives under `AReaL/rlvr_demo`. Runtime logs, rollout dumps, and
 checkpoints are written to `/NHNHOME/areal_runs/qwen3-gsm8k-rlvr` and are not
 committed.
 
-## Current Result
+## Mixed-Difficulty Math Result
+
+The harder mixed-math extension is documented in
+`AReaL/rlvr_demo/MULTI_MATH_EXPERIMENTS.md`. It trains on cleaned official
+GSM8K train plus MATH train, removes any normalized question overlap with the
+official test splits, and evaluates on held-out GSM8K plus MATH Level 1/2,
+Level 3, and Level 4/5 buckets.
+
+Final 128-example-per-bucket generated-answer results:
+
+| Model / checkpoint | GSM8K | MATH L1/2 | MATH L3 | MATH L4/5 | Average |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Base `Qwen/Qwen3-0.6B` | 57.03% | 56.25% | 28.12% | 13.28% | 38.67% |
+| GRPO step 100 | 68.75% | 82.81% | 64.84% | 39.84% | 64.06% |
+| DeepSeek SFT step 100 | 62.50% | 80.47% | 64.84% | 42.97% | 62.70% |
+
+The recommended final recipes are:
+
+- GRPO: `AReaL/rlvr_demo/configs/qwen3_06b_multi_math_grpo_b200_250.yaml`,
+  run with `AReaL/rlvr_demo/scripts/run_multi_math_grpo_b200.sh`. This uses
+  AReaL with a Megatron actor and SGLang rollouts on a 2+2 B200 split. Train
+  250 steps and select the best scheduled validation checkpoint. The recorded
+  run selected step 100; the reproducibility rerun selected step 200 and then
+  collapsed at the final checkpoint.
+- SFT: generate DeepSeek V4 Pro high-reasoning teacher data with
+  `AReaL/rlvr_demo/scripts/generate_multi_math_deepseek_sft.sh`, then train
+  `AReaL/rlvr_demo/configs/qwen3_06b_multi_math_deepseek_sft_b200_250.yaml`
+  with `AReaL/rlvr_demo/scripts/run_multi_math_deepseek_sft_b200.sh`. Train
+  250 steps and select checkpoint step 100.
+
+The generated DeepSeek JSONL, HF eval outputs, rollouts, and checkpoints are
+runtime artifacts and are intentionally not committed.
+
+## GSM8K Result
 
 All accuracy numbers below use the same first 256 GSM8K test examples unless
 noted otherwise.
