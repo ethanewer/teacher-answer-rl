@@ -24,6 +24,10 @@ Final AIME-2026 generated-answer results over seeds 7, 13, and 21:
 | GRPO step 299 | 3/30 | 3/30 | 4/30 | 10/90 = 11.11% |
 | RFT-SFT step 199 | 2/30 | 2/30 | 2/30 | 6/90 = 6.67% |
 
+Post-commit reruns were also positive: GRPO step 299 reran at 7/90, and
+RFT-SFT step 199 reran at 7/90 after regenerating the supervised rollout JSONL
+from the rerun GRPO logs.
+
 Recommended AIME-2026 recipes:
 
 - GRPO: `AReaL/rlvr_demo/configs/qwen3_17b_aime_hardmath_correct_grpo_b200_dev_300.yaml`.
