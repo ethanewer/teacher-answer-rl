@@ -1,0 +1,26 @@
+.env
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+
+# Runtime artifacts live outside the repo, but keep local copies out too.
+areal_runs/
+AReaL/rlvr_demo/data/*.jsonl
+AReaL/rlvr_demo/results/
+AReaL/outputs/
+AReaL/wandb/
+
+# Large model/checkpoint/log artifacts
+checkpoints/
+logs/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.jsonl
+
+# Local caches
+.cache/
+hf_cache/
+triton/

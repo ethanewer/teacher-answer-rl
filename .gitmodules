@@ -1,0 +1,3 @@
+[submodule "AReaL"]
+	path = AReaL
+	url = https://github.com/inclusionAI/AReaL.git
