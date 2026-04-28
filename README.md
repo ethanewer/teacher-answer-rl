@@ -34,6 +34,12 @@ Post-commit reruns were also positive: GRPO step 299 reran at 7/90, and
 RFT-SFT step 199 reran at 7/90 after regenerating the supervised rollout JSONL
 from the rerun GRPO logs.
 
+Final acceptance status: both the GRPO recipe and the rollout-SFT recipe
+consistently improve the three-seed AIME-2026 aggregate over the base
+`Qwen/Qwen3-1.7B` score of 4/90 across the original run and an independent
+rerun. None of the evaluated seeds regressed below the base result for that
+seed.
+
 Paired AIME-2026 comparison against the base model:
 
 | Run | Candidate-only correct | Base-only correct | Two-sided sign-test p |
