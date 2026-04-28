@@ -227,6 +227,19 @@ Both final recipes improve the three-seed aggregate over the base model. GRPO is
 the stronger recipe. RFT-SFT is weaker but has no seed-level regression against
 the base seeds tested here.
 
+Post-commit reproducibility rerun:
+
+| Rerun | Seed 7 | Seed 13 | Seed 21 | Total |
+| --- | ---: | ---: | ---: | ---: |
+| GRPO `qwen3-17b-aime-hardmath-correct-grpo-b200-dev-300-repro1`, step 299 | 3/30 | 2/30 | 2/30 | 7/90 = 7.78% |
+| RFT-SFT `qwen3-17b-aime-rollout-rft-sft-b200-300-repro1`, step 199 | 2/30 | 3/30 | 2/30 | 7/90 = 7.78% |
+
+The GRPO rerun completed in 1,475.21 seconds. Extracting max-2 correct rollouts
+from that rerun produced 5,326 supervised rows over 2,815 unique training
+prompts. The SFT rerun trained on that freshly extracted JSONL and completed in
+89.84 seconds. Both reruns remain positive against the same base aggregate of
+4/90.
+
 Discarded checks:
 
 - Qwen3-0.6B base remained 0/30 at 1024 and 2048 new tokens.
