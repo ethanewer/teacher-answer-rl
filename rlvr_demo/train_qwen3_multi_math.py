@@ -19,6 +19,14 @@ def _dataset_kwargs(dataset_config, seed: int) -> dict[str, Any]:
     return kwargs
 
 
+def _reward_fn(config: GRPOConfig) -> str:
+    kwargs = dict(getattr(config.train_dataset, "dataset_kwargs", {}) or {})
+    return str(
+        kwargs.get("reward_fn")
+        or "rlvr_demo.multi_math_reward.qwen3_multi_math_reward_fn"
+    )
+
+
 def main(args: list[str]) -> None:
     config, _ = load_expr_config(args, GRPOConfig)
     localize_model_paths(config)
@@ -43,7 +51,7 @@ def main(args: list[str]) -> None:
         )
 
     workflow_kwargs = dict(
-        reward_fn="rlvr_demo.multi_math_reward.qwen3_multi_math_reward_fn",
+        reward_fn=_reward_fn(config),
         gconfig=config.gconfig,
         tokenizer=config.tokenizer_path,
         enable_thinking=True,

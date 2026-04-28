@@ -20,7 +20,7 @@ MULTI_MATH_PROMPT_TEMPLATE = """Please solve the math problem step by step. Use 
 Problem:
 {question}
 
-IMPORTANT: Put the final answer after `Final answer:`. For exact values, use a simplified exact expression or LaTeX. Do not include units or explanatory text after the final answer.
+IMPORTANT: Put the final answer after `Final answer:`. If the problem asks for an AIME-style answer, give only the requested integer from 0 to 999. Otherwise, use a simplified exact expression or LaTeX. Do not include units or explanatory text after the final answer.
 
 Format:
 <think>
@@ -30,12 +30,16 @@ Final answer: [answer only]"""
 
 _BOXED_RE = re.compile(r"\\boxed\s*\{")
 _WHITESPACE_RE = re.compile(r"\s+")
-_BUCKET_ORDER = ("gsm8k", "math_l12", "math_l3", "math_l45")
+_BUCKET_ORDER = ("aime", "gsm8k", "math_l12", "math_l3", "math_l45")
 TRAIN_SOURCES = [{"name": "gsm8k", "split": "train"}, {"name": "math", "split": "train"}]
 TEST_SOURCES = [{"name": "gsm8k", "split": "test"}, {"name": "math", "split": "test"}]
 GRPO_VALIDATION_HOLDOUT = {"gsm8k": 128, "math_l12": 64, "math_l3": 64, "math_l45": 64}
 SFT_VALIDATION_HOLDOUT = GRPO_VALIDATION_HOLDOUT
 DEEPSEEK_VALIDATION_HOLDOUT = {"gsm8k": 32, "math_l12": 32, "math_l3": 32, "math_l45": 32}
+AIME_SOURCE = "lchen001/AIME1983_2024"
+AIME_SOLUTION_SOURCE = "hxlhassam/AIME_Problem_Set_1983-2024"
+AIME_RECENT_SOURCE = "allenai/aime-2022-2025"
+AIME_2025_SOLUTION_SOURCE = "Sunny8781/AIME2025_w_solution"
 
 
 def normalize_question(question: str) -> str:
@@ -76,6 +80,46 @@ def extract_boxed_answer(solution: str) -> str:
         if answer:
             return answer
     return solution.strip()
+
+
+def _normalize_aime_answer(answer: Any) -> str:
+    """Normalize AIME integer answers while preserving verifier-friendly strings."""
+    text = str(answer).strip()
+    text = text.removeprefix("\\boxed{").removesuffix("}")
+    text = text.strip().strip("$")
+    if re.fullmatch(r"[+-]?\d+", text):
+        return str(int(text))
+    return text
+
+
+def _problem_number(value: Any) -> int | None:
+    match = re.search(r"\d+", str(value))
+    if match is None:
+        return None
+    return int(match.group(0))
+
+
+def _historical_aime_solutions(seed: int) -> dict[tuple[int, int], str]:
+    del seed
+    try:
+        dataset = load_dataset(AIME_SOLUTION_SOURCE, split="train")
+    except Exception:
+        return {}
+    solutions: dict[tuple[int, int], str] = {}
+    for row in dataset:
+        year = int(row["Year"])
+        number = _problem_number(row.get("Problem"))
+        solution = str(row.get("Solution") or "").strip()
+        if number is None or not solution:
+            continue
+        solutions.setdefault((year, number), solution)
+    return solutions
+
+
+def _first_aops_solution(solution: str) -> str:
+    """Keep the first AoPS-style solution when a row concatenates many variants."""
+    parts = re.split(r"\n\s*~[^\n]*\n", solution.strip(), maxsplit=1)
+    return parts[0].strip()
 
 
 def _coerce_sources(sources: Any, default_source: str | None) -> list[dict[str, Any]]:
@@ -149,6 +193,124 @@ def _source_records(spec: dict[str, Any], seed: int) -> list[dict[str, Any]]:
             )
         return records
 
+    if name in {"aime", "aime-historical", "aime_historical", "aime1983_2024"}:
+        dataset = load_dataset(AIME_SOURCE, split=split)
+        min_year = spec.get("min_year")
+        max_year = spec.get("max_year")
+        if min_year is not None:
+            dataset = dataset.filter(lambda row: int(row["Year"]) >= int(min_year))
+        if max_year is not None:
+            dataset = dataset.filter(lambda row: int(row["Year"]) <= int(max_year))
+        dataset = _select_limit(dataset, limit, seed, shuffle_limit)
+        solutions = _historical_aime_solutions(seed)
+        for row in dataset:
+            year = int(row["Year"])
+            number = (
+                _problem_number(row.get("Problem Number"))
+                or _problem_number(row.get("Problem"))
+                or _problem_number(row.get("ID"))
+            )
+            if number is None:
+                continue
+            question = str(row["Question"]).strip()
+            answer = row.get("Answer")
+            if not question or answer is None:
+                continue
+            solution = solutions.get((year, number), "")
+            records.append(
+                {
+                    "source": "aime",
+                    "level": "aime",
+                    "question": question,
+                    "answer": _normalize_aime_answer(answer),
+                    "solution": solution,
+                    "type": "AIME",
+                    "contest_year": year,
+                    "problem_idx": number,
+                }
+            )
+        return records
+
+    if name in {"aime_recent", "aime-2022-2025", "allenai/aime-2022-2025"}:
+        dataset = load_dataset(AIME_RECENT_SOURCE, split=split)
+        min_year = spec.get("min_year")
+        max_year = spec.get("max_year")
+        if min_year is not None:
+            dataset = dataset.filter(lambda row: int(row["year"]) >= int(min_year))
+        if max_year is not None:
+            dataset = dataset.filter(lambda row: int(row["year"]) <= int(max_year))
+        dataset = _select_limit(dataset, limit, seed, shuffle_limit)
+        for row in dataset:
+            year = int(row["year"])
+            question = str(row["problem"]).strip()
+            answer = row.get("answer")
+            if not question or answer is None:
+                continue
+            records.append(
+                {
+                    "source": "aime",
+                    "level": "aime",
+                    "question": question,
+                    "answer": _normalize_aime_answer(answer),
+                    "solution": _first_aops_solution(str(row.get("solution") or "")),
+                    "type": "AIME",
+                    "contest_year": year,
+                    "problem_idx": int(row["id"]) + 1,
+                }
+            )
+        return records
+
+    if name in {"aime_2025_solutions", "sunny8781/aime2025_w_solution"}:
+        source_split = "test" if split == "train" else split
+        dataset = load_dataset(AIME_2025_SOLUTION_SOURCE, split=source_split)
+        dataset = _select_limit(dataset, limit, seed, shuffle_limit)
+        for row in dataset:
+            question = str(row["problem"]).strip()
+            answer = row.get("answer")
+            if not question or answer is None:
+                continue
+            records.append(
+                {
+                    "source": "aime",
+                    "level": "aime",
+                    "question": question,
+                    "answer": _normalize_aime_answer(answer),
+                    "solution": str(row.get("solution") or "").strip(),
+                    "type": "AIME",
+                    "contest_year": 2025,
+                    "problem_idx": int(row["id"]) + 1,
+                }
+            )
+        return records
+
+    if name in {
+        "aime_2025",
+        "matharena/aime_2025",
+        "matharena_aime_2025",
+        "aime_2026",
+        "matharena/aime_2026",
+        "matharena_aime_2026",
+    }:
+        dataset_name = "MathArena/aime_2026" if "2026" in name else "MathArena/aime_2025"
+        contest_year = 2026 if "2026" in name else 2025
+        dataset = load_dataset(dataset_name, split=split)
+        dataset = _select_limit(dataset, limit, seed, shuffle_limit)
+        for row in dataset:
+            question = str(row["problem"]).strip()
+            records.append(
+                {
+                    "source": "aime",
+                    "level": "aime",
+                    "question": question,
+                    "answer": _normalize_aime_answer(row["answer"]),
+                    "solution": "",
+                    "type": ",".join(row.get("problem_type") or ["AIME"]),
+                    "contest_year": contest_year,
+                    "problem_idx": int(row["problem_idx"]),
+                }
+            )
+        return records
+
     raise ValueError(f"Unsupported math source: {name}")
 
 
@@ -188,6 +350,8 @@ def record_bucket(row: dict[str, Any]) -> str:
     bucket = str(row.get("bucket", ""))
     if bucket in _BUCKET_ORDER:
         return bucket
+    if row.get("source") == "aime" or row.get("level") == "aime":
+        return "aime"
     if row.get("source") == "gsm8k":
         return "gsm8k"
     level = str(row.get("level", ""))
@@ -370,6 +534,7 @@ def get_named_eval_dataset(
     limit: int | None,
     seed: int,
 ) -> Dataset:
+    post_limit = False
     if name == "mixed_train_validation":
         return get_multi_math_dataset(
             path="mixed_math",
@@ -386,7 +551,34 @@ def get_named_eval_dataset(
             holdout_per_bucket=GRPO_VALIDATION_HOLDOUT,
         )
 
-    if name == "gsm8k_test":
+    if name == "aime_2026":
+        sources = [{"name": "aime_2026", "split": "train", "limit": limit, "shuffle_limit": False}]
+    elif name == "aime_2025":
+        sources = [{"name": "aime_2025", "split": "train", "limit": limit, "shuffle_limit": False}]
+    elif name == "aime_2024":
+        sources = [
+            {
+                "name": "aime_historical",
+                "split": "train",
+                "min_year": 2024,
+                "max_year": 2024,
+                "limit": limit,
+                "shuffle_limit": False,
+            }
+        ]
+    elif name == "aime_pre2026_validation":
+        post_limit = limit is not None
+        sources = [
+            {
+                "name": "aime_historical",
+                "split": "train",
+                "min_year": 2024,
+                "max_year": 2024,
+                "shuffle_limit": False,
+            },
+            {"name": "aime_2025", "split": "train", "shuffle_limit": False},
+        ]
+    elif name == "gsm8k_test":
         sources = [{"name": "gsm8k", "split": "test", "limit": limit, "shuffle_limit": False}]
     elif name == "math_test_all":
         sources = [{"name": "math", "split": "test", "limit": limit, "shuffle_limit": False}]
@@ -422,7 +614,7 @@ def get_named_eval_dataset(
         ]
     else:
         raise ValueError(f"Unknown eval dataset name: {name}")
-    return get_multi_math_dataset(
+    dataset = get_multi_math_dataset(
         path="mixed_math",
         split="test",
         tokenizer=tokenizer,
@@ -430,6 +622,9 @@ def get_named_eval_dataset(
         sources=sources,
         seed=seed,
     )
+    if post_limit:
+        dataset = dataset.select(range(min(limit, len(dataset))))
+    return dataset
 
 
 def get_multi_math_sft_dataset(
@@ -447,6 +642,7 @@ def get_multi_math_sft_dataset(
     holdout_size: int = 512,
     balanced_holdout: bool = False,
     holdout_per_bucket: dict[str, int] | None = None,
+    assistant_format: str = "report",
     **_: Any,
 ) -> Dataset:
     """Load mixed math SFT rows from official train-split solutions."""
@@ -476,9 +672,22 @@ def get_multi_math_sft_dataset(
     for row in rl_dataset:
         question = str(row["question"])
         solution = solution_by_hash.get(question_hash(question), "")
+        if not solution:
+            continue
+        answer = str(row["answer"])
+        if assistant_format == "report":
+            assistant_content = f"<think>\n{solution.strip()}\n</think>\nFinal answer: {answer}"
+        elif assistant_format == "natural_boxed":
+            assistant_content = f"{solution.strip()}\n\n**Final answer**\n\\boxed{{{answer}}}"
+        elif assistant_format == "solution_boxed":
+            assistant_content = f"{solution.strip()}\n\n\\boxed{{{answer}}}"
+        else:
+            raise ValueError(
+                "assistant_format must be one of: report, natural_boxed, solution_boxed"
+            )
         assistant = {
             "role": "assistant",
-            "content": f"<think>\n{solution.strip()}\n</think>\nFinal answer: {row['answer']}",
+            "content": assistant_content,
         }
         messages = [{"role": "user", "content": build_multi_math_prompt(question)}]
         prompt_ids = tokenizer.apply_chat_template(

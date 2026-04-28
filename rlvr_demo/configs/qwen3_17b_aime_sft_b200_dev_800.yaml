@@ -1,0 +1,163 @@
+experiment_name: qwen3-17b-aime-sft-b200-dev-800
+trial_name: trial0
+
+seed: 7
+enable_offload: false
+total_train_epochs: 30
+total_train_steps: 800
+tokenizer_path: ${actor.path}
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 4
+  fileroot: /NHNHOME/areal_runs/qwen3-gsm8k-rlvr
+  name_resolve:
+    type: nfs
+    nfs_record_root: /NHNHOME/areal_runs/qwen3-gsm8k-rlvr/name_resolve
+
+scheduler:
+  type: local
+
+actor:
+  backend: "megatron:d4p1t1"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: Qwen/Qwen3-1.7B
+  init_from_scratch: false
+  disable_dropout: true
+  gradient_checkpointing: false
+  dtype: bfloat16
+  mb_spec:
+    max_tokens_per_mb: 32768
+    packing_algorithm: ffd
+  optimizer:
+    type: adam
+    lr: 1e-5
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.95
+    eps: 1e-8
+    lr_scheduler_type: cosine
+    gradient_clipping: 1.0
+    warmup_steps_proportion: 0.03
+  megatron:
+    bridge_type: mbridge
+    ddp:
+      overlap_grad_reduce: false
+      overlap_param_gather: false
+      use_distributed_optimizer: true
+    use_deterministic_algorithms: false
+  scheduling_spec:
+    - task_type: worker
+      port_count: 2
+      gpu: 1
+      cpu: 12
+      mem: 96
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        PATH: /NHNHOME/PROJECT/wbl-workspace/ewer/rl-test/AReaL/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        NCCL_SOCKET_IFNAME: eth0
+        GLOO_SOCKET_IFNAME: eth0
+        NCCL_CUMEM_ENABLE: "0"
+        NCCL_NVLS_ENABLE: "0"
+        CUDA_DEVICE_MAX_CONNECTIONS: "1"
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+        HF_HOME: /NHNHOME/areal_cache/huggingface
+        HF_HUB_ENABLE_HF_TRANSFER: "1"
+        TRITON_CACHE_DIR: /NHNHOME/areal_cache/triton
+        TRITON_CACHE_PATH: /NHNHOME/areal_cache/triton
+        TRANSFORMERS_NO_TF: "1"
+        USE_TF: "0"
+        USE_FLAX: "0"
+        TF_CPP_MIN_LOG_LEVEL: "3"
+
+train_dataset:
+  batch_size: 16
+  shuffle: true
+  pin_memory: true
+  num_workers: 4
+  path: mixed_math
+  split: train
+  type: sft
+  max_length: 8192
+  scheduling_spec: null
+  dataset_kwargs:
+    shuffle_records: true
+    sources:
+      - name: aime_historical
+        split: train
+        max_year: 2021
+      - name: aime_recent
+        split: train
+        min_year: 2022
+        max_year: 2023
+    eval_sources:
+      - name: aime_historical
+        split: train
+        min_year: 2024
+        max_year: 2024
+      - name: aime_2025
+        split: train
+      - name: aime_2026
+        split: train
+
+valid_dataset:
+  batch_size: 16
+  shuffle: false
+  pin_memory: true
+  num_workers: 4
+  path: mixed_math
+  split: train
+  type: sft
+  max_length: 8192
+  scheduling_spec: null
+  dataset_kwargs:
+    shuffle_records: false
+    sources:
+      - name: aime_historical
+        split: train
+        min_year: 2024
+        max_year: 2024
+      - name: aime_2025_solutions
+        split: test
+
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 100
+  freq_secs: null
+
+recover:
+  mode: disabled
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  eval_before_train: true
+  freq_epochs: null
+  freq_steps: 100
+  freq_secs: null
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  wandb:
+    mode: disabled
+
+perf_tracer:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  enabled: false
+  session_tracer:
+    enabled: false

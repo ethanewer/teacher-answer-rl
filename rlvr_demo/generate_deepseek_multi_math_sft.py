@@ -38,6 +38,15 @@ step-by-step reasoning
 Final answer: <answer only>
 For exact math answers, use a simplified exact expression or LaTeX. Do not include units, markdown, or explanatory text after the final answer."""
 
+AIME_SYSTEM_PROMPT = """You are generating supervised fine-tuning data for a small Qwen3 math reasoning model.
+Solve the AIME problem carefully with concise but complete reasoning.
+Your answer must use exactly this visible format:
+<think>
+step-by-step reasoning
+</think>
+Final answer: <integer>
+The final answer must be only the requested AIME integer from 0 to 999. Do not include units, markdown, or explanatory text after the final answer."""
+
 FINAL_ANSWER_RE = re.compile(r"Final answer:\s*(?P<answer>.+?)\s*$", re.IGNORECASE | re.DOTALL)
 
 
@@ -106,6 +115,58 @@ def _load_balanced_items(records_per_bucket: int, seed: int) -> list[dict[str, A
     return items
 
 
+def _load_aime_items(min_year: int, max_year: int, seed: int) -> list[dict[str, Any]]:
+    """Load AIME rows through ``max_year`` while keeping AIME-2026 out of train data."""
+    sources: list[dict[str, Any]] = []
+    if min_year <= 2021:
+        sources.append(
+            {
+                "name": "aime_historical",
+                "split": "train",
+                "min_year": min_year,
+                "max_year": min(max_year, 2021),
+            }
+        )
+    if max_year >= 2022:
+        sources.append(
+            {
+                "name": "aime_recent",
+                "split": "train",
+                "min_year": max(min_year, 2022),
+                "max_year": max_year,
+            }
+        )
+    if not sources:
+        return []
+
+    heldout = load_heldout_hashes([{"name": "aime_2026", "split": "train"}], seed)
+    records = _dedupe(load_math_records(sources, seed))
+    records = [row for row in records if question_hash(str(row["question"])) not in heldout]
+
+    items: list[dict[str, Any]] = []
+    for row in records:
+        year = int(row.get("contest_year", 0))
+        if year < min_year or year > max_year:
+            continue
+        question = str(row["question"])
+        items.append(
+            {
+                "bucket": "aime",
+                "source": row.get("source", "aime"),
+                "level": "aime",
+                "type": row.get("type", "AIME"),
+                "contest_year": year,
+                "problem_idx": row.get("problem_idx"),
+                "question": question,
+                "answer": str(row["answer"]),
+                "prompt": build_multi_math_prompt(question),
+                "system_prompt": AIME_SYSTEM_PROMPT,
+            }
+        )
+    random.Random(seed).shuffle(items)
+    return items
+
+
 def _already_done(path: Path, retry_failed: bool) -> set[str]:
     if not path.exists():
         return set()
@@ -164,7 +225,7 @@ async def _call_teacher(
 ) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": str(item.get("system_prompt") or SYSTEM_PROMPT)},
         {"role": "user", "content": item["prompt"]},
     ]
     body: dict[str, Any] = {
@@ -192,7 +253,7 @@ async def _call_teacher(
             correct = bool(worker.verify(prediction, str(item["answer"])))
             if not correct and attempt < max_retries:
                 body["messages"] = [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": str(item.get("system_prompt") or SYSTEM_PROMPT)},
                     {
                         "role": "user",
                         "content": (
@@ -230,11 +291,14 @@ async def _generate(args: argparse.Namespace) -> None:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     done = _already_done(args.output, retry_failed=args.retry_failed)
-    items = [
-        item
-        for item in _load_balanced_items(args.records_per_bucket, args.seed)
-        if item["question"] not in done
-    ]
+    if args.preset == "mixed_balanced":
+        loaded_items = _load_balanced_items(args.records_per_bucket, args.seed)
+    elif args.preset == "aime_1983_2025":
+        loaded_items = _load_aime_items(args.min_year, args.max_year, args.seed)
+    else:
+        raise ValueError(f"Unknown preset: {args.preset}")
+
+    items = [item for item in loaded_items if item["question"] not in done]
     if args.limit is not None:
         items = items[: args.limit]
     if not items:
@@ -285,6 +349,14 @@ def main() -> None:
     )
     parser.add_argument("--env", type=Path, default=Path("../.env"))
     parser.add_argument("--records-per-bucket", type=int, default=512)
+    parser.add_argument(
+        "--preset",
+        choices=("mixed_balanced", "aime_1983_2025"),
+        default="mixed_balanced",
+        help="Data selection preset. The AIME preset uses only contest data up to --max-year.",
+    )
+    parser.add_argument("--min-year", type=int, default=1983)
+    parser.add_argument("--max-year", type=int, default=2025)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--concurrency", type=int, default=128)

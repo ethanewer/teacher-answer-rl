@@ -52,3 +52,24 @@ def qwen3_multi_math_reward_fn(
     except Exception:
         logger.warning("Exception in qwen3_multi_math_reward_fn", exc_info=True)
         return 0.0
+
+
+def qwen3_math_correct_reward_fn(
+    prompt,
+    completions,
+    prompt_ids,
+    completion_ids,
+    answer,
+    **kwargs,
+) -> float:
+    del prompt, prompt_ids, completion_ids, kwargs
+    try:
+        completion = str(completions)
+        worker = get_math_verify_worker()
+        score = worker.verify(extract_report_answer(completion), str(answer))
+        if score <= 0.0:
+            score = worker.verify(completion, str(answer))
+        return float(score)
+    except Exception:
+        logger.warning("Exception in qwen3_math_correct_reward_fn", exc_info=True)
+        return 0.0
