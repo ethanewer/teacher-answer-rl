@@ -1,0 +1,5 @@
+candidate,candidate_only_correct,base_only_correct,both_correct,both_wrong,discordant,two_sided_sign_test_p
+GRPO original,6,0,4,80,6,0.03125
+GRPO rerun,4,1,3,82,5,0.375
+Rollout-SFT original,3,1,3,83,4,0.625
+Rollout-SFT rerun,3,0,4,83,3,0.25

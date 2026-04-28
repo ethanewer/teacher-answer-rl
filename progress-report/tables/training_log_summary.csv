@@ -1,0 +1,7 @@
+run,steps_parsed,rows,ppo_actor/update/actor_loss/avg:first,ppo_actor/update/actor_loss/avg:last,rollout/reward:first,rollout/reward:last,eval-rollout/reward:first,eval-rollout/reward:last,timeperf/train_step:first,timeperf/train_step:last,sft/loss/avg:first,sft/loss/avg:last,sft/ppl/avg:first,sft/ppl/avg:last
+aime_grpo_original,300,300,7.6833e-05,3.8196e-06,0.31771,0.64103,0.033333,0.066667,5.121,2.2903,,,,
+aime_grpo_rerun,300,300,0.00016755,1.0942e-05,0.30469,0.61682,0.016667,0.066667,4.7739,2.4764,,,,
+aime_sft_original,300,300,,,,,,,2.237,0.14308,0.3394,0.12063,1.545,1.1128
+aime_sft_rerun,300,300,,,,,,,2.2141,0.14261,0.36154,0.10097,1.5712,1.1043
+mixed_grpo,250,250,6.9178e-05,-0.035384,0.375,0.50781,0.35656,0.37781,5.0833,3.3067,,,,
+mixed_sft,250,250,,,,,,,2.1091,0.11608,0.77102,0.2726,2.2054,1.2863
