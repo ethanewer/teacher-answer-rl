@@ -1,4 +1,4 @@
 [submodule "AReaL"]
 	path = AReaL
 	url = git@github.com:ethanewer/teacher-answer-rl.git
-	branch = areal-submodule
+	branch = areal-code
