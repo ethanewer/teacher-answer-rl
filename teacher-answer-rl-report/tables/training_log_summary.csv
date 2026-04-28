@@ -1,0 +1,6 @@
+run,rows,max_step,teacher_answer_logp/avg:first,teacher_answer_logp/avg:last,ppo_actor/no_eos_ratios/avg:first,ppo_actor/no_eos_ratios/avg:last,rollout/reward:first,rollout/reward:last,timeperf/train_step:first,timeperf/train_step:last,timeperf/rollout_postprocess:first,timeperf/rollout_postprocess:last,teacher_added_prefix_len/avg:first,teacher_added_prefix_len/avg:last,teacher_context_len/avg:first,teacher_context_len/avg:last,sft/loss/avg:first,sft/loss/avg:last
+answer_rl_reasoning_only,250,250,-2.2578,-1.7945,0.0625,0.0625,0.0,0.0,4.718,3.0476,0.6739,0.63785,,,,,,
+answer_rl_final_prompt,250,250,-1.3016,-1.5817,0.0625,0.058594,0.0,0.0,5.0608,3.8932,0.73307,0.6887,3.3438,4.0,530.64,505.54,,
+answer_rl_format_unverified,250,250,-2.0675,-2.2763,0.0625,0.0625,0.0,0.0,4.987,3.9551,0.76156,0.72698,3.875,2.6562,578.06,515.27,,
+grpo_baseline,250,250,,,0.054688,0.011719,0.375,0.50781,5.0833,3.3067,,,,,,,,
+deepseek_sft_baseline,250,250,,,,,,,2.1091,0.11608,,,,,,,0.77102,0.2726

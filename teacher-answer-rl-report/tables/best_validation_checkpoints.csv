@@ -1,0 +1,6 @@
+method,step,correct,n,accuracy,format_rate,mean_reward
+Answer-RL final-prompt,249,164,320,0.5125,0.0,0.5125
+Answer-RL format/unfiltered,49,164,320,0.5125,0.7,0.5825
+Answer-RL reasoning-only,199,177,320,0.553125,0.003125,0.5534375
+DeepSeek SFT,249,165,320,0.515625,0.859375,0.6015625000000001
+GRPO,149,174,320,0.54375,0.946875,0.6384375
