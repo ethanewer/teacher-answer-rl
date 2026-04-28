@@ -26,7 +26,12 @@ def _parse_args() -> argparse.Namespace:
         nargs="+",
         default=["gsm8k_test", "math_test_l12", "math_test_l3", "math_test_l45"],
     )
-    parser.add_argument("--limit", type=int, default=256)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=256,
+        help="Maximum examples per benchmark. Use 0 for the full benchmark slice.",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-prompt-length", type=int, default=1536)
@@ -68,7 +73,7 @@ def _evaluate_benchmark(
         name=benchmark,
         tokenizer=tokenizer,
         max_length=args.max_prompt_length,
-        limit=args.limit,
+        limit=None if args.limit <= 0 else args.limit,
         seed=args.seed,
     )
     rows: list[dict[str, Any]] = []
@@ -141,7 +146,7 @@ def _evaluate_benchmark(
         "mean_reward": sum(float(row["reward"]) for row in rows) / n if n else 0.0,
         "elapsed_sec": elapsed,
         "model_path": model_path,
-        "dataset_limit": args.limit,
+        "dataset_limit": None if args.limit <= 0 else args.limit,
         "seed": args.seed,
         "batch_size": args.batch_size,
         "temperature": args.temperature,
@@ -189,6 +194,40 @@ def main() -> None:
         json.dumps(all_metrics, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+    total_n = sum(int(item["n"]) for item in all_metrics)
+    overall = {
+        "benchmark": "overall",
+        "n": total_n,
+        "correct": sum(int(item["correct"]) for item in all_metrics),
+        "accuracy": (
+            sum(int(item["correct"]) for item in all_metrics) / total_n if total_n else 0.0
+        ),
+        "format_rate": (
+            sum(float(item["format_rate"]) * int(item["n"]) for item in all_metrics) / total_n
+            if total_n
+            else 0.0
+        ),
+        "mean_reward": (
+            sum(float(item["mean_reward"]) * int(item["n"]) for item in all_metrics) / total_n
+            if total_n
+            else 0.0
+        ),
+        "elapsed_sec": sum(float(item["elapsed_sec"]) for item in all_metrics),
+        "model_path": model_path,
+        "dataset_limit": None if args.limit <= 0 else args.limit,
+        "seed": args.seed,
+        "batch_size": args.batch_size,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "max_new_tokens": args.max_new_tokens,
+    }
+    (out_dir / "overall_metrics.json").write_text(
+        json.dumps(overall, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(overall, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

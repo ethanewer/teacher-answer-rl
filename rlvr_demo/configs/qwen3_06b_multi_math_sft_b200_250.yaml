@@ -83,7 +83,12 @@ train_dataset:
   scheduling_spec: null
   dataset_kwargs:
     split_part: train
-    holdout_size: 512
+    balanced_holdout: true
+    holdout_per_bucket:
+      gsm8k: 128
+      math_l12: 64
+      math_l3: 64
+      math_l45: 64
     shuffle_records: true
     sources:
       - name: gsm8k
@@ -108,7 +113,12 @@ valid_dataset:
   scheduling_spec: null
   dataset_kwargs:
     split_part: validation
-    holdout_size: 512
+    balanced_holdout: true
+    holdout_per_bucket:
+      gsm8k: 128
+      math_l12: 64
+      math_l3: 64
+      math_l45: 64
     sources:
       - name: gsm8k
         split: train

@@ -82,8 +82,14 @@ train_dataset:
   max_length: 4096
   scheduling_spec: null
   dataset_kwargs:
+    exclude_train_validation: true
     split_part: train
-    holdout_size: 128
+    balanced_holdout: true
+    holdout_per_bucket:
+      gsm8k: 32
+      math_l12: 32
+      math_l3: 32
+      math_l45: 32
     shuffle_records: true
 
 valid_dataset:
@@ -97,8 +103,14 @@ valid_dataset:
   max_length: 4096
   scheduling_spec: null
   dataset_kwargs:
+    exclude_train_validation: true
     split_part: validation
-    holdout_size: 128
+    balanced_holdout: true
+    holdout_per_bucket:
+      gsm8k: 32
+      math_l12: 32
+      math_l3: 32
+      math_l45: 32
     shuffle_records: true
 
 saver:

@@ -1,9 +1,14 @@
-# Qwen3-0.6B Mixed-Math RLVR Experiments
+# Qwen3-0.6B Mixed-Math RLVR Baselines
 
-This note documents the harder math extension of the Qwen3-0.6B RLVR demo.
-The goal is a short, reproducible comparison between one GRPO recipe and one
-SFT recipe on a range from grade-school arithmetic through MATH Level 5
-competition problems.
+This note documents the reviewed mixed-difficulty math baselines for
+`Qwen/Qwen3-0.6B` on this 4x B200 node. The final recipes use AReaL with the
+Megatron backend; the GRPO recipe uses SGLang rollouts.
+
+The current reviewed baselines fix an earlier experimental flaw: older mixed
+math runs used official test examples for scheduled GRPO validation. Those old
+numbers are useful as exploration only. The results below select checkpoints on
+a deterministic train-split validation holdout, then evaluate the selected
+checkpoints once on the official test splits.
 
 All commands assume:
 
@@ -13,7 +18,7 @@ cd /NHNHOME/PROJECT/wbl-workspace/ewer/rl-test/AReaL
 
 ## Research Survey
 
-The recipe choices are based on these references:
+Recipe choices were guided by:
 
 - Qwen3-0.6B model card:
   https://huggingface.co/Qwen/Qwen3-0.6B
@@ -38,78 +43,90 @@ The recipe choices are based on these references:
 - MATH paper:
   https://arxiv.org/abs/2103.03874
 
-The main takeaways I used:
+The important choices are:
 
-- GRPO is appropriate here because math answers can be verified by a rule-based
-  reward, avoiding a critic model.
-- Qwen3 thinking-mode sampling should use `temperature=0.6`, `top_p=0.95`, and
-  `top_k=20`; the Qwen card explicitly discourages greedy decoding for thinking
-  mode.
-- Recent math-RL recipes such as DeepScaleR rely on verified math problems and
-  longer context windows as difficulty rises. For this short B200 demo I kept
-  `max_new_tokens=512` so 250-step runs finish quickly, but the dataset and
-  configs are structured so the same recipe can be lengthened later.
-- I did not train on OpenR1, NuminaMath, or DeepScaleR preview data in the final
-  clean comparison because those datasets are large synthetic/curated mixtures
-  with no official held-out split in the same format. They are useful recipe
-  references, but the final experiment uses official GSM8K and MATH train/test
-  splits so contamination control is explicit.
-- The final SFT comparison uses DeepSeek V4 Pro high-reasoning solutions for
-  questions sampled only from those cleaned training splits. Rows are admitted
-  only when the teacher final answer verifies against the official train answer.
+- Use GRPO because math answers can be verified with a rule-based reward, so no
+  critic model is needed.
+- Use Qwen3 thinking-mode sampling with `temperature=0.6`, `top_p=0.95`, and
+  `top_k=20`. The Qwen card discourages greedy decoding for thinking mode.
+- Keep `max_new_tokens=512` for a short B200 recipe. Harder benchmarks would
+  likely benefit from longer generations, but this setting keeps 250-step
+  reruns practical.
+- Use official GSM8K and MATH train/test splits for the final comparison so
+  split hygiene is auditable. Large synthetic sets such as OpenR1, NuminaMath,
+  and DeepScaleR are useful recipe references, but they were not used in the
+  final clean baseline.
 
-## Data
+## Split Hygiene
 
-Training data:
+Training sources:
 
 - `openai/gsm8k`, subset `main`, split `train`
 - `DigitalLearningGmbH/MATH-lighteval`, split `train`
 
-Held-out test data:
+Official test sources:
 
 - `openai/gsm8k`, subset `main`, split `test`
 - `DigitalLearningGmbH/MATH-lighteval`, split `test`
 
-Counts before token filtering:
+Every question is normalized by whitespace collapse and case folding, then
+hashed with SHA-256. Duplicate train questions are dropped. Any train question
+whose normalized hash appears in either official test split is removed.
 
-| Split | GSM8K | MATH | Total |
-| --- | ---: | ---: | ---: |
-| Train | 7,473 | 7,500 | 14,973 |
-| Test | 1,319 | 5,000 | 6,319 |
+Audit command:
 
-Contamination controls:
+```bash
+.venv/bin/python -m rlvr_demo.audit_multi_math_splits \
+  --deepseek-jsonl rlvr_demo/data/deepseek_v4_pro_multi_math_balanced_sft.jsonl
+```
 
-- Every question is normalized with whitespace collapse and case folding, then
-  hashed with SHA-256.
-- Duplicate train questions are dropped.
-- Any train question whose normalized hash appears in either official test split
-  is removed.
-- This removed 1 train row in the mixed GSM8K+MATH setup.
-- SFT validation is a 512-example deterministic holdout from the cleaned train
-  questions, not from either official test split.
+Reviewed audit, seed 7:
 
-Usable tokenized rows:
-
-| Dataset | Max length | Rows |
-| --- | ---: | ---: |
-| GRPO train | 1,536 prompt tokens | 14,969 |
-| SFT train | 3,072 total tokens | 14,459 |
-| SFT validation | 3,072 total tokens | 512 |
-
-DeepSeek teacher SFT data for the final recipe:
-
-| Bucket | Verified rows |
+| Quantity | Count |
 | --- | ---: |
-| GSM8K train | 501 |
-| MATH Level 1/2 train | 461 |
-| MATH Level 3 train | 435 |
-| MATH Level 4/5 train | 408 |
-| Total unique verified rows | 1,805 |
+| Raw train rows | 14,973 |
+| Unique train rows | 14,972 |
+| Official test rows | 6,319 |
+| Unique train/test exact overlaps | 1 |
+| Clean unique train rows | 14,971 |
 
-The teacher generator also wrote 244 `wrong` rows. They are kept in the ignored
-JSONL for auditability but are not loaded by the SFT dataset helper. At
-`max_length=4096`, the final DeepSeek SFT split has 1,659 train rows and a
-128-row deterministic train-split validation holdout.
+Bucket counts:
+
+| Split | GSM8K | MATH L1/2 | MATH L3 | MATH L4/5 | Other |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Clean train pool | 7,473 | 1,912 | 1,592 | 3,992 | 2 |
+| Shared validation holdout | 128 | 64 | 64 | 64 | 0 |
+| GRPO train | 7,345 | 1,848 | 1,528 | 3,928 | 2 |
+| Official-solution SFT train | 7,345 | 1,848 | 1,528 | 3,928 | 2 |
+| Official test | 1,319 | 1,331 | 1,131 | 2,538 | 0 |
+
+DeepSeek SFT teacher data:
+
+| Split | GSM8K | MATH L1/2 | MATH L3 | MATH L4/5 |
+| --- | ---: | ---: | ---: | ---: |
+| Verified JSONL rows before shared-validation filter | 959 | 781 | 726 | 739 |
+| Verified rows after shared-validation filter | 834 | 766 | 701 | 734 |
+| DeepSeek SFT train | 802 | 734 | 669 | 702 |
+| DeepSeek SFT validation | 32 | 32 | 32 | 32 |
+
+Overlap checks from the reviewed audit:
+
+| Check | Overlap |
+| --- | ---: |
+| GRPO train vs shared validation | 0 |
+| GRPO train vs official test | 0 |
+| Shared validation vs official test | 0 |
+| Official-solution SFT train vs shared validation | 0 |
+| Official-solution SFT train vs official test | 0 |
+| DeepSeek SFT train vs shared validation | 0 |
+| DeepSeek SFT train vs official test | 0 |
+| DeepSeek SFT validation vs shared validation | 0 |
+| DeepSeek SFT validation vs official test | 0 |
+
+The raw DeepSeek JSONL still contains 170 verified rows that overlap the shared
+validation holdout because they were generated during an earlier exploratory
+pass. The SFT dataset loader filters them out, and the current generator samples
+from the GRPO training pool so fresh regeneration avoids this overlap.
 
 ## Prompt And Reward
 
@@ -137,7 +154,7 @@ The GRPO reward is:
 ```
 
 `strict_format` requires a `<think>...</think>` block followed by
-`Final answer:`. The reward tries the extracted final answer first and falls
+`Final answer:`. The reward verifies the extracted final answer first and falls
 back to verifying the full completion.
 
 ## GRPO Recipe
@@ -151,7 +168,9 @@ rlvr_demo/configs/qwen3_06b_multi_math_grpo_b200_250.yaml
 Run:
 
 ```bash
-bash rlvr_demo/scripts/run_multi_math_grpo_b200.sh
+bash rlvr_demo/scripts/run_multi_math_grpo_b200.sh \
+  rlvr_demo/configs/qwen3_06b_multi_math_grpo_b200_250.yaml \
+  experiment_name=qwen3-06b-multi-math-grpo-b200-250-reviewed-v2
 ```
 
 Important settings:
@@ -164,6 +183,7 @@ Important settings:
 | Steps | 250 |
 | Train batch | 32 prompts |
 | GRPO samples | 8 |
+| Max prompt length | 1,536 tokens |
 | Max new tokens | 512 |
 | Sampling | `temperature=0.6`, `top_p=0.95`, `top_k=20` |
 | Actor LR | `5e-6`, constant |
@@ -174,87 +194,60 @@ Important settings:
 | SGLang max running requests | 192 |
 | SGLang static memory fraction | 0.60 |
 
-The config writes checkpoints and aggregate validation rollouts every 50 steps.
-Validation uses 320 total examples: 128 GSM8K test, 64 MATH Level 1/2, 64 MATH
-Level 3, and 64 MATH Level 4/5.
+The reviewed 250-step rerun completed in 988.22 seconds after initialization.
 
-Summarize the AReaL validation dumps:
+AReaL train-holdout validation:
 
-```bash
-.venv/bin/python -m rlvr_demo.summarize_eval_rollouts \
-  /NHNHOME/areal_runs/qwen3-gsm8k-rlvr/logs/ewer/qwen3-06b-multi-math-grpo-b200-250/trial0/eval-rollout
-```
+| Step | Correct | Accuracy | Mean reward | Strict format | Avg gen len | No EOS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 109/320 | 34.06% | 0.3566 | 15.94% | 487.1 | 75.62% |
+| 50 | 159/320 | 49.69% | 0.5931 | 96.25% | 214.1 | 4.69% |
+| 100 | 171/320 | 53.44% | 0.6319 | 97.50% | 249.1 | 2.81% |
+| 150 | 166/320 | 51.88% | 0.6181 | 99.38% | 206.2 | 0.63% |
+| 200 | 167/320 | 52.19% | 0.6194 | 97.50% | 248.3 | 2.81% |
+| 250 | 102/320 | 31.87% | 0.3778 | 59.06% | 337.7 | 40.31% |
 
-## SFT Recipes
+HF generated-answer validation on the same shared train holdout:
 
-### Official-Solution Ablation
+| Global step | Correct | Accuracy | Mean reward | Strict format |
+| ---: | ---: | ---: | ---: | ---: |
+| 49 | 167/320 | 52.19% | 0.6194 | 97.50% |
+| 99 | 178/320 | 55.62% | 0.6522 | 95.94% |
+| 149 | 162/320 | 50.62% | 0.6059 | 99.69% |
+| 199 | 167/320 | 52.19% | 0.6197 | 97.81% |
+| 249 | 99/320 | 30.94% | 0.3700 | 60.62% |
 
-Config:
+Selection rule: choose the scheduled checkpoint with the best HF generated-answer
+accuracy on `mixed_train_validation`; break ties by mean reward, then earlier
+global step. The reviewed run selects global step 99:
 
 ```text
-rlvr_demo/configs/qwen3_06b_multi_math_sft_b200_250.yaml
+/NHNHOME/areal_runs/qwen3-gsm8k-rlvr/checkpoints/ewer/qwen3-06b-multi-math-grpo-b200-250-reviewed-v2/trial0/default/epoch0epochstep99globalstep99
 ```
 
-Run:
+## DeepSeek SFT Recipe
 
-```bash
-bash rlvr_demo/scripts/run_multi_math_sft_b200.sh
-```
-
-Important settings:
-
-| Setting | Value |
-| --- | --- |
-| Backend | `megatron:d4p1t1` |
-| GPU topology | all 4 B200 GPUs for Megatron SFT |
-| Steps | 250 |
-| Train batch | 32 examples |
-| Max total length | 3,072 tokens |
-| LR | `1.5e-5` |
-| LR schedule | cosine |
-| Warmup | 3% |
-| Adam betas | `0.9`, `0.95` |
-| Weight decay | `0.01` |
-| Gradient clip | `1.0` |
-
-This ablation uses the same cleaned train questions as GRPO, with the official
-GSM8K and MATH train-split solutions as supervised traces. It is matched at the
-question level and avoids test answers, but it underperformed: step 100 reached
-only 161/512 average generated-answer correctness on the four 128-example eval
-buckets, worse than the base model. I kept it as a negative control, not as the
-recommended SFT recipe.
-
-### Final DeepSeek SFT Recipe
-
-Generate the teacher data:
+Generate teacher data:
 
 ```bash
 bash rlvr_demo/scripts/generate_multi_math_deepseek_sft.sh
 ```
 
-The generator loads `DEEPSEEK_API_KEY` from
-`/NHNHOME/PROJECT/wbl-workspace/ewer/rl-test/.env`, uses model
-`deepseek-v4-pro`, enables thinking mode, sets `reasoning_effort=high`, and runs
-with 128-way concurrency. The data file is ignored by git:
+The generator reads `DEEPSEEK_API_KEY` from
+`/NHNHOME/PROJECT/wbl-workspace/ewer/rl-test/.env`, uses `deepseek-v4-pro`, sets
+`reasoning_effort=high`, enables thinking mode, and uses 128-way concurrency.
+The JSONL is intentionally ignored by git:
 
 ```text
 rlvr_demo/data/deepseek_v4_pro_multi_math_balanced_sft.jsonl
 ```
 
-Normal reruns are idempotent and skip questions already present in the JSONL.
-Pass `--retry-failed` to `rlvr_demo.generate_deepseek_multi_math_sft` only when
-you intentionally want to retry existing `wrong` or `error` rows.
-
 Train:
 
 ```bash
-bash rlvr_demo/scripts/run_multi_math_deepseek_sft_b200.sh
-```
-
-Config:
-
-```text
-rlvr_demo/configs/qwen3_06b_multi_math_deepseek_sft_b200_250.yaml
+bash rlvr_demo/scripts/run_multi_math_deepseek_sft_b200.sh \
+  rlvr_demo/configs/qwen3_06b_multi_math_deepseek_sft_b200_250.yaml \
+  experiment_name=qwen3-06b-multi-math-deepseek-sft-b200-250-reviewed-v2
 ```
 
 Important settings:
@@ -274,140 +267,104 @@ Important settings:
 | Gradient clip | `1.0` |
 | Checkpoint cadence | every 50 steps |
 
-The 250-step SFT run completed in 71.05 seconds after initialization on this
-node. Generated-answer accuracy peaked around steps 100-150; for the recorded
-run, the recommended checkpoint is step 100 because it tied step 150 on average
-while keeping better GSM8K accuracy and better Level 4/5 formatting.
+The reviewed SFT rerun completed in 69.95 seconds after initialization.
 
-## Final Evaluation
+HF generated-answer validation on the shared train holdout:
 
-The final generated-answer comparison uses `rlvr_demo.eval_hf_multi_math` with
-the same prompt, answer extraction, `math_verify` scoring, and Qwen3 sampling
-settings as training. Results are written under ignored `rlvr_demo/results/`.
+| Global step | Correct | Accuracy | Mean reward | Strict format |
+| ---: | ---: | ---: | ---: | ---: |
+| 49 | 158/320 | 49.38% | 0.5819 | 88.12% |
+| 99 | 145/320 | 45.31% | 0.5428 | 89.69% |
+| 149 | 153/320 | 47.81% | 0.5653 | 87.19% |
+| 199 | 154/320 | 48.12% | 0.5700 | 88.75% |
+| 249 | 150/320 | 46.88% | 0.5556 | 86.88% |
 
-Example for a checkpoint:
+Selection rule is the same as GRPO. The reviewed run selects global step 49:
+
+```text
+/NHNHOME/areal_runs/qwen3-gsm8k-rlvr/checkpoints/ewer/qwen3-06b-multi-math-deepseek-sft-b200-250-reviewed-v2/trial0/default/epoch0epochstep49globalstep49
+```
+
+## Evaluation Commands
+
+Checkpoint validation sweep:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-PYTORCH_ALLOC_CONF=expandable_segments:True \
-HF_HOME=/NHNHOME/areal_cache/huggingface \
-TRANSFORMERS_NO_TF=1 USE_TF=0 USE_FLAX=0 \
-.venv/bin/python -m rlvr_demo.eval_hf_multi_math \
-  --model /path/to/checkpoint \
-  --output-dir rlvr_demo/results/example_eval_l128 \
-  --limit 128 \
-  --batch-size 64
+bash rlvr_demo/scripts/eval_multi_math_validation_sweep.sh \
+  qwen3-06b-multi-math-deepseek-sft-b200-250-reviewed-v2 \
+  rlvr_demo/results/reviewed_v2_sft_validation \
+  0 128
+
+CUDA_VISIBLE_DEVICES=1 \
+bash rlvr_demo/scripts/eval_multi_math_validation_sweep.sh \
+  qwen3-06b-multi-math-grpo-b200-250-reviewed-v2 \
+  rlvr_demo/results/reviewed_v2_grpo_validation_hf \
+  0 128
 ```
 
-Benchmarks:
+Final official-test evaluation:
 
-- `gsm8k_test`: first 128 official GSM8K test examples
-- `math_test_l12`: first 128 official MATH test Level 1/2 examples
-- `math_test_l3`: first 128 official MATH test Level 3 examples
-- `math_test_l45`: first 128 official MATH test Level 4/5 examples
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+bash rlvr_demo/scripts/eval_multi_math_hf.sh \
+  Qwen/Qwen3-0.6B \
+  rlvr_demo/results/reviewed_v2_base_full \
+  0 128
 
-## Results
+CUDA_VISIBLE_DEVICES=1 \
+bash rlvr_demo/scripts/eval_multi_math_hf.sh \
+  /NHNHOME/areal_runs/qwen3-gsm8k-rlvr/checkpoints/ewer/qwen3-06b-multi-math-grpo-b200-250-reviewed-v2/trial0/default/epoch0epochstep99globalstep99 \
+  rlvr_demo/results/reviewed_v2_grpo_step100_full \
+  0 128
 
-### GRPO Training Validation
-
-AReaL validation used 320 held-out prompts: 128 GSM8K test, 64 MATH Level 1/2,
-64 MATH Level 3, and 64 MATH Level 4/5.
-
-| Step | Correct | Accuracy | Mean reward | Strict format | Avg gen len | No EOS |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 123/320 | 38.44% | 0.4016 | 17.19% | 486.0 | 75.00% |
-| 50 | 194/320 | 60.62% | 0.7009 | 94.69% | 250.2 | 5.31% |
-| 100 | 201/320 | 62.81% | 0.7272 | 99.06% | 228.9 | 0.94% |
-| 150 | 187/320 | 58.44% | 0.6841 | 99.69% | 259.8 | 0.31% |
-| 200 | 182/320 | 56.87% | 0.6681 | 99.38% | 269.9 | 0.63% |
-| 250 | 174/320 | 54.37% | 0.6438 | 100.00% | 201.8 | 0.00% |
-
-Recommended GRPO checkpoint:
-
-```text
-/NHNHOME/areal_runs/qwen3-gsm8k-rlvr/checkpoints/ewer/qwen3-06b-multi-math-grpo-b200-250/trial0/default/epoch0epochstep99globalstep99
+CUDA_VISIBLE_DEVICES=2 \
+bash rlvr_demo/scripts/eval_multi_math_hf.sh \
+  /NHNHOME/areal_runs/qwen3-gsm8k-rlvr/checkpoints/ewer/qwen3-06b-multi-math-deepseek-sft-b200-250-reviewed-v2/trial0/default/epoch0epochstep49globalstep49 \
+  rlvr_demo/results/reviewed_v2_deepseek_sft_step50_full \
+  0 128
 ```
 
-### Generated-Answer Evaluation
+`--limit 0` means full benchmark slices. The evaluator uses one sampled
+generation per example with seed 7 and the same Qwen3 sampling settings as
+training.
 
-Each cell below is accuracy on the first 128 examples of that official held-out
-benchmark slice. The average column is over all 512 evaluated examples.
+## Reviewed Full-Test Results
 
-| Model / checkpoint | GSM8K | MATH L1/2 | MATH L3 | MATH L4/5 | Average |
+The final table uses all 6,319 official test examples:
+
+| Model | GSM8K | MATH L1/2 | MATH L3 | MATH L4/5 | Overall |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Base `Qwen/Qwen3-0.6B` | 57.03% | 56.25% | 28.12% | 13.28% | 38.67% |
-| GRPO step 100 | 68.75% | 82.81% | 64.84% | 39.84% | 64.06% |
-| DeepSeek SFT step 50 | 59.38% | 81.25% | 60.16% | 34.38% | 58.79% |
-| DeepSeek SFT step 100 | 62.50% | 80.47% | 64.84% | 42.97% | 62.70% |
-| DeepSeek SFT step 150 | 59.38% | 82.03% | 67.19% | 42.19% | 62.70% |
-| DeepSeek SFT step 200 | 59.38% | 80.47% | 67.19% | 40.62% | 61.91% |
-| DeepSeek SFT step 250 | 63.28% | 78.91% | 60.16% | 38.28% | 60.16% |
-| Official-solution SFT step 100 | 34.38% | 51.56% | 22.66% | 17.19% | 31.45% |
+| Base `Qwen/Qwen3-0.6B` | 696/1319 = 52.77% | 506/1331 = 38.02% | 257/1131 = 22.72% | 244/2538 = 9.61% | 1703/6319 = 26.95% |
+| GRPO step 99 | 879/1319 = 66.64% | 835/1331 = 62.73% | 508/1131 = 44.92% | 547/2538 = 21.55% | 2769/6319 = 43.82% |
+| DeepSeek SFT step 49 | 763/1319 = 57.85% | 772/1331 = 58.00% | 481/1131 = 42.53% | 496/2538 = 19.54% | 2512/6319 = 39.75% |
 
-Final choices:
+Format rates on the same full test:
 
-- GRPO recipe: train 250 steps, then select the best scheduled validation
-  checkpoint from steps 50/100/150/200. The recorded run's best checkpoint was
-  step 100; a reproducibility rerun peaked at step 200 and then collapsed at
-  step 250, so the selection rule matters.
-- SFT recipe: train the DeepSeek teacher recipe for 250 steps, select the
-  step-100 checkpoint. It improves every difficulty bucket over base and is
-  strongest on Level 4/5 in this evaluation, but it remains slightly behind GRPO
-  on the overall average.
+| Model | Overall format rate | Overall mean reward |
+| --- | ---: | ---: |
+| Base `Qwen/Qwen3-0.6B` | 10.56% | 0.2801 |
+| GRPO step 99 | 96.77% | 0.5350 |
+| DeepSeek SFT step 49 | 82.32% | 0.4799 |
 
-Recommended SFT checkpoint:
+Conclusion:
 
-```text
-/NHNHOME/areal_runs/qwen3-gsm8k-rlvr/checkpoints/ewer/qwen3-06b-multi-math-deepseek-sft-b200-250/trial0/default/epoch1epochstep48globalstep99
-```
+- Both reviewed recipes improve every difficulty bucket over the base model.
+- GRPO is the strongest baseline overall: +16.87 percentage points over base
+  on the full mixed official test.
+- DeepSeek SFT is also positive: +12.80 percentage points over base, with much
+  lower training wall time but additional teacher-generation cost.
+- The final checkpoint is not safe for GRPO; step 249 collapsed on validation.
+  Always select from scheduled checkpoints using the shared train-holdout
+  validation sweep.
 
-## Reproducibility Rerun
+## Limitations
 
-After the final scripts were in place, I reran the final recipes under separate
-experiment names so the original artifacts were left intact.
+These are acceptable single-seed baselines for future work on this node, but a
+paper making strong superiority claims should add:
 
-DeepSeek data generation:
-
-```bash
-bash rlvr_demo/scripts/generate_multi_math_deepseek_sft.sh
-```
-
-Result: idempotent rerun found no remaining questions because the ignored JSONL
-already contained all 2,048 selected train questions.
-
-GRPO rerun:
-
-```bash
-bash rlvr_demo/scripts/run_multi_math_grpo_b200.sh \
-  rlvr_demo/configs/qwen3_06b_multi_math_grpo_b200_250.yaml \
-  experiment_name=qwen3-06b-multi-math-grpo-b200-250-repro1
-```
-
-This completed 250 steps in 1042.21 seconds after initialization. AReaL
-validation summary:
-
-| Step | Correct | Accuracy | Mean reward | Strict format | Avg gen len | No EOS |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 137/320 | 42.81% | 0.4447 | 16.56% | 481.4 | 74.38% |
-| 50 | 187/320 | 58.44% | 0.6834 | 99.06% | 193.4 | 0.94% |
-| 100 | 180/320 | 56.25% | 0.6591 | 96.56% | 276.8 | 5.31% |
-| 150 | 181/320 | 56.56% | 0.6634 | 97.81% | 281.0 | 3.44% |
-| 200 | 200/320 | 62.50% | 0.7216 | 96.56% | 274.3 | 15.31% |
-| 250 | 0/320 | 0.00% | 0.0000 | 0.00% | 510.4 | 100.00% |
-
-This reproduced the intended short-run gain and the late-collapse risk. Use the
-best validation checkpoint, not the final checkpoint.
-
-DeepSeek SFT rerun:
-
-```bash
-bash rlvr_demo/scripts/run_multi_math_deepseek_sft_b200.sh \
-  rlvr_demo/configs/qwen3_06b_multi_math_deepseek_sft_b200_250.yaml \
-  experiment_name=qwen3-06b-multi-math-deepseek-sft-b200-250-repro1
-```
-
-This completed 250 steps in 70.51 seconds after initialization. The final
-train loss was 0.0660 and the held-out teacher-forcing eval loss was 0.6286,
-matching the original run closely enough for recipe reproducibility. As with
-the recorded run, generated-answer checkpoint selection should be done on saved
-checkpoints rather than by final SFT loss alone.
+- At least three training seeds for GRPO and SFT.
+- Multiple sampled evaluation seeds or a deterministic decoding protocol.
+- A stronger near-duplicate contamination audit; the current audit checks exact
+  normalized question overlap.
+- Longer-context variants for very hard MATH problems if wall time permits.

@@ -148,6 +148,13 @@ train_dataset:
   max_length: 1536
   scheduling_spec: null
   dataset_kwargs:
+    split_part: train
+    balanced_holdout: true
+    holdout_per_bucket:
+      gsm8k: 128
+      math_l12: 64
+      math_l3: 64
+      math_l45: 64
     shuffle_records: true
     sources:
       - name: gsm8k
@@ -166,27 +173,28 @@ valid_dataset:
   pin_memory: true
   num_workers: 4
   path: mixed_math
-  split: test
+  split: train
   type: rl
   max_length: 1536
   scheduling_spec: null
   dataset_kwargs:
+    split_part: validation
+    balanced_holdout: true
+    holdout_per_bucket:
+      gsm8k: 128
+      math_l12: 64
+      math_l3: 64
+      math_l45: 64
     sources:
       - name: gsm8k
+        split: train
+      - name: math
+        split: train
+    eval_sources:
+      - name: gsm8k
         split: test
-        limit: 128
       - name: math
         split: test
-        levels: ["Level 1", "Level 2"]
-        limit: 64
-      - name: math
-        split: test
-        levels: ["Level 3"]
-        limit: 64
-      - name: math
-        split: test
-        levels: ["Level 4", "Level 5"]
-        limit: 64
 
 saver:
   experiment_name: ${experiment_name}

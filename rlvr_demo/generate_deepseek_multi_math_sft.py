@@ -16,11 +16,15 @@ import httpx
 
 from areal.reward import get_math_verify_worker
 from rlvr_demo.multi_math_data import (
+    TEST_SOURCES,
+    TRAIN_SOURCES,
+    balanced_train_validation_hashes,
     build_multi_math_prompt,
     extract_boxed_answer,
     load_heldout_hashes,
     load_math_records,
     question_hash,
+    record_bucket,
 )
 from rlvr_demo.multi_math_reward import extract_report_answer
 
@@ -34,14 +38,6 @@ step-by-step reasoning
 Final answer: <answer only>
 For exact math answers, use a simplified exact expression or LaTeX. Do not include units, markdown, or explanatory text after the final answer."""
 
-TRAIN_SOURCES = [
-    {"name": "gsm8k", "split": "train"},
-    {"name": "math", "split": "train"},
-]
-EVAL_SOURCES = [
-    {"name": "gsm8k", "split": "test"},
-    {"name": "math", "split": "test"},
-]
 FINAL_ANSWER_RE = re.compile(r"Final answer:\s*(?P<answer>.+?)\s*$", re.IGNORECASE | re.DOTALL)
 
 
@@ -68,23 +64,14 @@ def _dedupe(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return unique
 
 
-def _bucket_name(row: dict[str, Any]) -> str:
-    if row.get("source") == "gsm8k":
-        return "gsm8k"
-    level = str(row.get("level", ""))
-    if level in {"Level 1", "Level 2"}:
-        return "math_l12"
-    if level == "Level 3":
-        return "math_l3"
-    if level in {"Level 4", "Level 5"}:
-        return "math_l45"
-    return "other"
-
-
 def _load_balanced_items(records_per_bucket: int, seed: int) -> list[dict[str, Any]]:
-    heldout = load_heldout_hashes(EVAL_SOURCES, seed)
+    heldout = load_heldout_hashes(TEST_SOURCES, seed)
+    shared_validation = balanced_train_validation_hashes(seed)
     records = _dedupe(load_math_records(TRAIN_SOURCES, seed))
     records = [row for row in records if question_hash(str(row["question"])) not in heldout]
+    records = [
+        row for row in records if question_hash(str(row["question"])) not in shared_validation
+    ]
 
     buckets: dict[str, list[dict[str, Any]]] = {
         "gsm8k": [],
@@ -93,7 +80,7 @@ def _load_balanced_items(records_per_bucket: int, seed: int) -> list[dict[str, A
         "math_l45": [],
     }
     for row in records:
-        bucket = _bucket_name(row)
+        bucket = record_bucket(row)
         if bucket in buckets:
             buckets[bucket].append(row)
 

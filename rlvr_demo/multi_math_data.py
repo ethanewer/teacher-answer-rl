@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, load_dataset
 
 from rlvr_demo.qwen3_gsm8k_data import extract_gold_answer
 
@@ -30,6 +30,12 @@ Final answer: [answer only]"""
 
 _BOXED_RE = re.compile(r"\\boxed\s*\{")
 _WHITESPACE_RE = re.compile(r"\s+")
+_BUCKET_ORDER = ("gsm8k", "math_l12", "math_l3", "math_l45")
+TRAIN_SOURCES = [{"name": "gsm8k", "split": "train"}, {"name": "math", "split": "train"}]
+TEST_SOURCES = [{"name": "gsm8k", "split": "test"}, {"name": "math", "split": "test"}]
+GRPO_VALIDATION_HOLDOUT = {"gsm8k": 128, "math_l12": 64, "math_l3": 64, "math_l45": 64}
+SFT_VALIDATION_HOLDOUT = GRPO_VALIDATION_HOLDOUT
+DEEPSEEK_VALIDATION_HOLDOUT = {"gsm8k": 32, "math_l12": 32, "math_l3": 32, "math_l45": 32}
 
 
 def normalize_question(question: str) -> str:
@@ -170,6 +176,94 @@ def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return unique
 
 
+def load_clean_train_records(seed: int) -> list[dict[str, Any]]:
+    """Load deduped official train rows after removing exact official test overlap."""
+    records = _dedupe_records(load_math_records(TRAIN_SOURCES, seed))
+    heldout = load_heldout_hashes(TEST_SOURCES, seed)
+    return [row for row in records if question_hash(str(row["question"])) not in heldout]
+
+
+def record_bucket(row: dict[str, Any]) -> str:
+    """Return the difficulty bucket used for balanced train-validation splits."""
+    bucket = str(row.get("bucket", ""))
+    if bucket in _BUCKET_ORDER:
+        return bucket
+    if row.get("source") == "gsm8k":
+        return "gsm8k"
+    level = str(row.get("level", ""))
+    if level in {"Level 1", "Level 2"}:
+        return "math_l12"
+    if level == "Level 3":
+        return "math_l3"
+    if level in {"Level 4", "Level 5"}:
+        return "math_l45"
+    return "other"
+
+
+def _coerce_holdout_per_bucket(holdout_per_bucket: Any) -> dict[str, int]:
+    if holdout_per_bucket is None:
+        return {}
+    return {
+        str(bucket): int(count)
+        for bucket, count in dict(holdout_per_bucket).items()
+        if int(count) > 0
+    }
+
+
+def _balanced_holdout_hashes(
+    records: list[dict[str, Any]],
+    holdout_per_bucket: dict[str, int],
+    seed: int,
+) -> set[str]:
+    by_bucket: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in _BUCKET_ORDER}
+    for row in records:
+        bucket = record_bucket(row)
+        if bucket in by_bucket:
+            by_bucket[bucket].append(row)
+
+    selected: set[str] = set()
+    for idx, bucket in enumerate(_BUCKET_ORDER):
+        n = holdout_per_bucket.get(bucket, 0)
+        if n <= 0:
+            continue
+        rows = list(by_bucket[bucket])
+        random.Random(seed + idx * 1009).shuffle(rows)
+        for row in rows[: min(n, len(rows))]:
+            selected.add(question_hash(str(row["question"])))
+    return selected
+
+
+def _apply_balanced_holdout_partition(
+    records: list[dict[str, Any]],
+    split_part: str | None,
+    holdout_per_bucket: Any,
+    seed: int,
+) -> list[dict[str, Any]]:
+    if split_part is None:
+        return records
+    if split_part not in {"train", "validation"}:
+        raise ValueError("split_part must be 'train' or 'validation'")
+    counts = _coerce_holdout_per_bucket(holdout_per_bucket)
+    if not counts:
+        raise ValueError("balanced_holdout requires non-empty holdout_per_bucket")
+    holdout_hashes = _balanced_holdout_hashes(records, counts, seed)
+    if split_part == "validation":
+        return [row for row in records if question_hash(str(row["question"])) in holdout_hashes]
+    return [row for row in records if question_hash(str(row["question"])) not in holdout_hashes]
+
+
+def balanced_train_validation_hashes(
+    seed: int,
+    holdout_per_bucket: dict[str, int] | None = None,
+) -> set[str]:
+    """Return the shared train-split validation hashes used for checkpoint selection."""
+    return _balanced_holdout_hashes(
+        load_clean_train_records(seed),
+        GRPO_VALIDATION_HOLDOUT if holdout_per_bucket is None else holdout_per_bucket,
+        seed,
+    )
+
+
 def _apply_holdout_partition(
     records: list[dict[str, Any]],
     split_part: str | None,
@@ -201,6 +295,8 @@ def get_multi_math_dataset(
     shuffle_records: bool = False,
     split_part: str | None = None,
     holdout_size: int = 512,
+    balanced_holdout: bool = False,
+    holdout_per_bucket: dict[str, int] | None = None,
     **_: Any,
 ) -> Dataset:
     """Load mixed math RL rows while preventing train/test question overlap."""
@@ -217,7 +313,15 @@ def get_multi_math_dataset(
         if removed:
             print(f"Removed {removed} train rows that overlapped held-out eval questions.")
 
-    records = _apply_holdout_partition(records, split_part, holdout_size, seed)
+    if balanced_holdout:
+        records = _apply_balanced_holdout_partition(
+            records,
+            split_part=split_part,
+            holdout_per_bucket=holdout_per_bucket,
+            seed=seed,
+        )
+    else:
+        records = _apply_holdout_partition(records, split_part, holdout_size, seed)
 
     if limit is not None:
         if limit <= 0:
@@ -266,6 +370,22 @@ def get_named_eval_dataset(
     limit: int | None,
     seed: int,
 ) -> Dataset:
+    if name == "mixed_train_validation":
+        return get_multi_math_dataset(
+            path="mixed_math",
+            split="train",
+            tokenizer=tokenizer,
+            max_length=max_length,
+            sources=TRAIN_SOURCES,
+            eval_sources=TEST_SOURCES,
+            seed=seed,
+            limit=limit,
+            shuffle_limit=True,
+            split_part="validation",
+            balanced_holdout=True,
+            holdout_per_bucket=GRPO_VALIDATION_HOLDOUT,
+        )
+
     if name == "gsm8k_test":
         sources = [{"name": "gsm8k", "split": "test", "limit": limit, "shuffle_limit": False}]
     elif name == "math_test_all":
@@ -325,6 +445,8 @@ def get_multi_math_sft_dataset(
     shuffle_records: bool = False,
     split_part: str | None = None,
     holdout_size: int = 512,
+    balanced_holdout: bool = False,
+    holdout_per_bucket: dict[str, int] | None = None,
     **_: Any,
 ) -> Dataset:
     """Load mixed math SFT rows from official train-split solutions."""
@@ -341,6 +463,8 @@ def get_multi_math_sft_dataset(
         shuffle_records=shuffle_records,
         split_part=split_part,
         holdout_size=holdout_size,
+        balanced_holdout=balanced_holdout,
+        holdout_per_bucket=holdout_per_bucket,
     )
 
     solution_by_hash = {
@@ -448,6 +572,10 @@ def get_deepseek_multi_math_sft_dataset(
     limit: int | None = None,
     split_part: str | None = None,
     holdout_size: int = 128,
+    balanced_holdout: bool = False,
+    holdout_per_bucket: dict[str, int] | None = None,
+    exclude_train_validation: bool = False,
+    exclude_holdout_per_bucket: dict[str, int] | None = None,
     require_correct: bool = True,
     shuffle_records: bool = True,
     **_: Any,
@@ -478,15 +606,43 @@ def get_deepseek_multi_math_sft_dataset(
             rows_by_hash.setdefault(question_hash(question), row)
 
     rows = list(rows_by_hash.values())
-    rng = random.Random(seed)
-    if shuffle_records:
-        rng.shuffle(rows)
+    if exclude_train_validation:
+        exclude_hashes = balanced_train_validation_hashes(
+            seed=seed,
+            holdout_per_bucket=(
+                GRPO_VALIDATION_HOLDOUT
+                if exclude_holdout_per_bucket is None
+                else _coerce_holdout_per_bucket(exclude_holdout_per_bucket)
+            ),
+        )
+        rows = [row for row in rows if question_hash(str(row["question"])) not in exclude_hashes]
 
-    holdout = min(holdout_size, len(rows))
-    if split_part == "validation":
-        rows = rows[:holdout]
+    if balanced_holdout:
+        counts = _coerce_holdout_per_bucket(holdout_per_bucket)
+        if not counts:
+            raise ValueError("balanced_holdout requires non-empty holdout_per_bucket")
+        holdout_hashes = _balanced_holdout_hashes(
+            rows,
+            counts,
+            seed,
+        )
+        if split_part == "validation":
+            rows = [row for row in rows if question_hash(str(row["question"])) in holdout_hashes]
+        else:
+            rows = [row for row in rows if question_hash(str(row["question"])) not in holdout_hashes]
     else:
-        rows = rows[holdout:]
+        rng = random.Random(seed)
+        if shuffle_records:
+            rng.shuffle(rows)
+
+        holdout = min(holdout_size, len(rows))
+        if split_part == "validation":
+            rows = rows[:holdout]
+        else:
+            rows = rows[holdout:]
+
+    if shuffle_records:
+        random.Random(seed).shuffle(rows)
 
     if limit is not None:
         if limit <= 0:

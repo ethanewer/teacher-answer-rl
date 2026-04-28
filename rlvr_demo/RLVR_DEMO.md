@@ -6,6 +6,12 @@ settings from `../qwen3-grpo-report.md`, while using AReaL instead of TRL.
 
 The verified node is a single 4x NVIDIA B200 host.
 
+Reviewer note: this GSM8K-only demo is a reproduction and systems smoke
+baseline. Several runs evaluate scheduled checkpoints directly on GSM8K test
+examples, matching the original report-style workflow. Do not use these
+checkpoint-selected numbers as paper-grade held-out baselines. For the reviewed
+train-validation/test split protocol, use `rlvr_demo/MULTI_MATH_EXPERIMENTS.md`.
+
 ## Environment
 
 From `AReaL/`:
