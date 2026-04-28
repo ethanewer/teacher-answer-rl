@@ -12,9 +12,15 @@ committed.
 
 The AIME-2026 extension is documented in
 `AReaL/rlvr_demo/AIME_2026_EXPERIMENTS.md`. It adds
-`MathArena/aime_2026` as a final benchmark and uses only training prompts from
+`MathArena/aime_2026` as an external benchmark and uses only training prompts from
 2025 or earlier. `Qwen/Qwen3-0.6B` scored 0/30 on AIME-2026 in short baseline
 checks, so the final targeted recipes use `Qwen/Qwen3-1.7B`.
+
+Reviewer caveat: these AIME-2026 numbers are robust enough for a technical
+baseline, but not for a sealed benchmark claim in a paper. AIME-2026 was not
+used for training or scheduled checkpoint selection, but it was used during
+recipe iteration. The supervised recipe is RFT-style rollout distillation from
+GRPO, not an independent teacher-data SFT baseline.
 
 Final AIME-2026 generated-answer results over seeds 7, 13, and 21:
 
@@ -28,6 +34,15 @@ Post-commit reruns were also positive: GRPO step 299 reran at 7/90, and
 RFT-SFT step 199 reran at 7/90 after regenerating the supervised rollout JSONL
 from the rerun GRPO logs.
 
+Paired AIME-2026 comparison against the base model:
+
+| Run | Candidate-only correct | Base-only correct | Two-sided sign-test p |
+| --- | ---: | ---: | ---: |
+| GRPO original | 6 | 0 | 0.0312 |
+| RFT-SFT original | 3 | 1 | 0.6250 |
+| GRPO rerun | 4 | 1 | 0.3750 |
+| RFT-SFT rerun | 3 | 0 | 0.2500 |
+
 Recommended AIME-2026 recipes:
 
 - GRPO: `AReaL/rlvr_demo/configs/qwen3_17b_aime_hardmath_correct_grpo_b200_dev_300.yaml`.
@@ -40,11 +55,14 @@ Run the split audit with:
 
 ```bash
 cd /NHNHOME/PROJECT/wbl-workspace/ewer/rl-test/AReaL
-.venv/bin/python -m rlvr_demo.audit_aime2026_splits
+.venv/bin/python -m rlvr_demo.audit_aime2026_splits --fail-on-overlap
 ```
 
 The reviewed audit found 0 exact AIME-2026 train/test overlaps, 0 fuzzy matches
 above 0.90, and 0 RFT-SFT prompts outside the GRPO training prompt set.
+The strict rollout extractor also supports `--allowed-source-preset
+aime_hardmath_pre2024 --fail-on-disallowed`; on the rerun rollouts it skipped 0
+disallowed reward-passing prompts.
 
 ## Reviewed Mixed-Difficulty Math Result
 
