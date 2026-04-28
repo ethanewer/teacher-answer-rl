@@ -48,6 +48,7 @@ from areal.infra.data_service.rdataset import RDataset
 from areal.infra.utils.concurrent import call_maybe_async
 from areal.utils import logging, perf_tracer, seeding, stats_tracker
 from areal.utils.dataloader import create_dataloader
+from areal.utils.dynamic_import import import_from_string
 from areal.utils.environ import is_single_controller
 from areal.utils.evaluator import Evaluator
 from areal.utils.hf_utils import load_hf_processor_and_tokenizer
@@ -504,9 +505,14 @@ class PPOTrainer:
         workflow_kwargs: dict[str, Any] | None = None,
         eval_workflow_kwargs: dict[str, Any] | None = None,
         dynamic_filter_fn: Callable[[dict[str, Any]], bool] | str | None = None,
+        rollout_postprocess_fn: Callable[["PPOTrainer", list[dict[str, Any]], int], None]
+        | str
+        | None = None,
         total_epochs: int | None = None,
     ):
         config = self.config
+        if isinstance(rollout_postprocess_fn, str):
+            rollout_postprocess_fn = import_from_string(rollout_postprocess_fn)
         start_step = (
             self.recover_info.last_step_info.next().global_step
             if self.recover_info is not None
@@ -639,6 +645,18 @@ class PPOTrainer:
                     for traj, logp in zip(rollout_batch, prox_logps):
                         traj["prox_logp"] = logp
                     self.actor.get_device_stats().log("recompute logp")
+
+            if rollout_postprocess_fn is not None:
+                with (
+                    stats_tracker.record_timing("rollout_postprocess"),
+                    perf_tracer.trace_scope(
+                        "train.rollout_postprocess",
+                        category=Category.COMPUTE,
+                        args={"global_step": global_step},
+                    ),
+                ):
+                    rollout_postprocess_fn(self, rollout_batch, global_step)
+                    self.actor.get_device_stats().log("rollout postprocess")
 
             with (
                 stats_tracker.record_timing("compute_advantage"),

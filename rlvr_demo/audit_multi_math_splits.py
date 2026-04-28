@@ -54,7 +54,7 @@ def _partition(
     return train, validation
 
 
-def _deepseek_rows(path: Path) -> list[dict[str, Any]]:
+def _deepseek_rows(path: Path, require_correct: bool = True) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows_by_hash: dict[str, dict[str, Any]] = {}
@@ -63,7 +63,12 @@ def _deepseek_rows(path: Path) -> list[dict[str, Any]]:
             if not line.strip():
                 continue
             row = json.loads(line)
-            if row.get("status") != "ok" or row.get("teacher_correct") is not True:
+            if require_correct:
+                if row.get("status") != "ok" or row.get("teacher_correct") is not True:
+                    continue
+            elif row.get("status") not in {"ok", "wrong"}:
+                continue
+            if not str(row.get("teacher_prediction", "")).strip():
                 continue
             rows_by_hash.setdefault(question_hash(str(row["question"])), row)
     return list(rows_by_hash.values())
@@ -125,6 +130,17 @@ def main() -> None:
         DEEPSEEK_VALIDATION_HOLDOUT,
         args.seed,
     )
+    deepseek_unfiltered_rows = _deepseek_rows(args.deepseek_jsonl, require_correct=False)
+    deepseek_unfiltered_filtered = [
+        row
+        for row in deepseek_unfiltered_rows
+        if question_hash(str(row["question"])) not in grpo_valid_hashes
+    ]
+    deepseek_unfiltered_train, deepseek_unfiltered_valid = _partition(
+        deepseek_unfiltered_filtered,
+        DEEPSEEK_VALIDATION_HOLDOUT,
+        args.seed,
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(resolve_hf_snapshot(args.model), trust_remote_code=True)
     report = {
@@ -148,6 +164,12 @@ def main() -> None:
             "deepseek_after_shared_validation_filter": _counter(deepseek_filtered),
             "deepseek_train": _counter(deepseek_train),
             "deepseek_validation": _counter(deepseek_valid),
+            "deepseek_unfiltered": _counter(deepseek_unfiltered_rows),
+            "deepseek_unfiltered_after_shared_validation_filter": _counter(
+                deepseek_unfiltered_filtered
+            ),
+            "deepseek_unfiltered_train": _counter(deepseek_unfiltered_train),
+            "deepseek_unfiltered_validation": _counter(deepseek_unfiltered_valid),
         },
         "overlap_checks": {
             "grpo_train_vs_validation": len(_hashes(grpo_train) & _hashes(grpo_valid)),
@@ -164,6 +186,24 @@ def main() -> None:
             "deepseek_train_vs_shared_validation": len(_hashes(deepseek_train) & grpo_valid_hashes),
             "deepseek_validation_vs_shared_validation": len(
                 _hashes(deepseek_valid) & grpo_valid_hashes
+            ),
+            "deepseek_unfiltered_filtered_vs_shared_validation": len(
+                _hashes(deepseek_unfiltered_filtered) & grpo_valid_hashes
+            ),
+            "deepseek_unfiltered_train_vs_validation": len(
+                _hashes(deepseek_unfiltered_train) & _hashes(deepseek_unfiltered_valid)
+            ),
+            "deepseek_unfiltered_train_vs_test": len(
+                _hashes(deepseek_unfiltered_train) & test_hashes
+            ),
+            "deepseek_unfiltered_validation_vs_test": len(
+                _hashes(deepseek_unfiltered_valid) & test_hashes
+            ),
+            "deepseek_unfiltered_train_vs_shared_validation": len(
+                _hashes(deepseek_unfiltered_train) & grpo_valid_hashes
+            ),
+            "deepseek_unfiltered_validation_vs_shared_validation": len(
+                _hashes(deepseek_unfiltered_valid) & grpo_valid_hashes
             ),
         },
         "token_filtered_counts": {
@@ -185,6 +225,12 @@ def main() -> None:
         "deepseek_validation_vs_test",
         "deepseek_train_vs_shared_validation",
         "deepseek_validation_vs_shared_validation",
+        "deepseek_unfiltered_filtered_vs_shared_validation",
+        "deepseek_unfiltered_train_vs_validation",
+        "deepseek_unfiltered_train_vs_test",
+        "deepseek_unfiltered_validation_vs_test",
+        "deepseek_unfiltered_train_vs_shared_validation",
+        "deepseek_unfiltered_validation_vs_shared_validation",
     ]
     failures = {
         key: int(report["overlap_checks"][key])
