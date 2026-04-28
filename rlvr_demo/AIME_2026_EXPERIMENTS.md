@@ -13,6 +13,20 @@ checkpoint selection, but it was used during recipe iteration in this project.
 A paper should freeze these recipes before evaluating on a newer untouched
 benchmark, or explicitly label these AIME-2026 results as development-informed.
 
+Final acceptance status: the recipes satisfy the requested practical
+consistency criterion. Across the original run and an independent post-commit
+rerun, both GRPO and rollout-SFT improve the three-seed AIME-2026 aggregate over
+the base `Qwen/Qwen3-1.7B` score of 4/90, and no evaluated seed regresses below
+the base result for that seed.
+
+| Recipe run | Seed 7 | Seed 13 | Seed 21 | Aggregate |
+| --- | ---: | ---: | ---: | ---: |
+| Base `Qwen/Qwen3-1.7B` | 2/30 | 2/30 | 0/30 | 4/90 |
+| GRPO original | 3/30 | 3/30 | 4/30 | 10/90 |
+| GRPO rerun | 3/30 | 2/30 | 2/30 | 7/90 |
+| Rollout-SFT original | 2/30 | 2/30 | 2/30 | 6/90 |
+| Rollout-SFT rerun | 2/30 | 3/30 | 2/30 | 7/90 |
+
 All commands assume:
 
 ```bash
