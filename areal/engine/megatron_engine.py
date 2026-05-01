@@ -16,8 +16,6 @@ from typing import TYPE_CHECKING, Any
 import mbridge
 import torch
 import torch.distributed as dist
-from megatron.bridge import AutoBridge as MegatronBridgeAutoBridge
-from megatron.bridge.peft.lora import LoRA as MegatronBridgeLoRA
 from megatron.core import parallel_state as mpu
 from megatron.core import tensor_parallel
 from megatron.core.distributed import DistributedDataParallel as DDP
@@ -138,6 +136,22 @@ class _MegatronModelList(list):
             yield parameter
 
 
+MegatronBridgeAutoBridge: Any | None = None
+MegatronBridgeLoRA: Any | None = None
+
+
+def _load_megatron_bridge() -> None:
+    """Import Megatron Bridge only for configs that explicitly use it."""
+    global MegatronBridgeAutoBridge, MegatronBridgeLoRA
+    if MegatronBridgeAutoBridge is not None and MegatronBridgeLoRA is not None:
+        return
+    from megatron.bridge import AutoBridge as _MegatronBridgeAutoBridge
+    from megatron.bridge.peft.lora import LoRA as _MegatronBridgeLoRA
+
+    MegatronBridgeAutoBridge = _MegatronBridgeAutoBridge
+    MegatronBridgeLoRA = _MegatronBridgeLoRA
+
+
 class MegatronEngine(TrainEngine):
     def __init__(self, config: TrainEngineConfig):
         self.config = config
@@ -232,6 +246,8 @@ class MegatronEngine(TrainEngine):
     def _apply_megatron_bridge_lora(self) -> None:
         assert self.model is not None, "Model must be initialized before applying LoRA."
         assert self.bridge_cls == "megatron-bridge"
+        _load_megatron_bridge()
+        assert MegatronBridgeLoRA is not None
 
         target_modules = list(self.config.target_modules or [])
         if not target_modules or "all-linear" in target_modules:
@@ -435,6 +451,8 @@ class MegatronEngine(TrainEngine):
             )
 
         elif self.bridge_cls == "megatron-bridge":
+            _load_megatron_bridge()
+            assert MegatronBridgeAutoBridge is not None
             if self.enable_tree_training:
                 raise NotImplementedError(
                     "Tree training is not supported with bridge_type='megatron-bridge'."

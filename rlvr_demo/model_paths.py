@@ -1,4 +1,4 @@
-"""Model path helpers for AReaL Megatron recipes."""
+"""Model path helpers for AReaL terminal-agent recipes."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def resolve_hf_snapshot(model_path: str) -> str:
 
 
 def localize_model_paths(config) -> str:
-    """Mutate an AReaL config so Megatron and SGLang share a local snapshot."""
+    """Mutate an AReaL config so train and rollout engines share a local snapshot."""
     local_path = resolve_hf_snapshot(config.actor.path)
     config.actor.path = local_path
     config.tokenizer_path = local_path
@@ -37,6 +37,8 @@ def localize_model_paths(config) -> str:
         config.rollout.tokenizer_path = local_path
     if getattr(config, "sglang", None) is not None:
         config.sglang.model_path = local_path
+    if getattr(config, "vllm", None) is not None:
+        config.vllm.model = local_path
     if getattr(config, "ref", None) is not None:
         config.ref.path = local_path
     return local_path

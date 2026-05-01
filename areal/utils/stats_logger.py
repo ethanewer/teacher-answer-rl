@@ -7,9 +7,13 @@ from dataclasses import asdict
 
 import swanlab
 import torch.distributed as dist
-import trackio
 import wandb
 from tensorboardX import SummaryWriter
+
+try:
+    import trackio
+except Exception:
+    trackio = None
 
 from areal.api import FinetuneSpec
 from areal.api.cli_args import BaseExperimentConfig, StatsLoggerConfig
@@ -98,13 +102,16 @@ class StatsLogger:
         self._trackio_enabled = False
         trackio_config = self.config.trackio
         if trackio_config.mode != "disabled":
-            trackio.init(
-                project=trackio_config.project or self.config.experiment_name,
-                name=trackio_config.name or self.config.trial_name,
-                config=exp_config_dict,
-                space_id=trackio_config.space_id,
-            )
-            self._trackio_enabled = True
+            if trackio is None:
+                logger.warning("Trackio logging requested but trackio is unavailable.")
+            else:
+                trackio.init(
+                    project=trackio_config.project or self.config.experiment_name,
+                    name=trackio_config.name or self.config.trial_name,
+                    config=exp_config_dict,
+                    space_id=trackio_config.space_id,
+                )
+                self._trackio_enabled = True
 
         # tensorboard logging
         self.summary_writer = None
@@ -127,7 +134,7 @@ class StatsLogger:
         )
         wandb.finish()
         swanlab.finish()
-        if getattr(self, "_trackio_enabled", False):
+        if getattr(self, "_trackio_enabled", False) and trackio is not None:
             trackio.finish()
         if self.summary_writer is not None:
             self.summary_writer.close()
@@ -151,7 +158,7 @@ class StatsLogger:
             self.print_stats(item)
             wandb.log(item, step=log_step + i)
             swanlab.log(item, step=log_step + i)
-            if getattr(self, "_trackio_enabled", False):
+            if getattr(self, "_trackio_enabled", False) and trackio is not None:
                 trackio.log(item, step=log_step + i)
             if self.summary_writer is not None:
                 for key, val in item.items():
