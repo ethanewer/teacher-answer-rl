@@ -125,6 +125,7 @@ actor:
 
 sglang:
   model_path: ${actor.path}
+  python_executable: ${oc.env:AREAL_SGLANG_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-sglang/bin/python}
   random_seed: ${seed}
   skip_tokenizer_init: true
   dtype: ${actor.dtype}
@@ -139,6 +140,7 @@ sglang:
 
 vllm:
   model: ${actor.path}
+  python_executable: ${oc.env:AREAL_VLLM_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-vllm/bin/python}
   seed: ${seed}
   skip_tokenizer_init: false
   dtype: ${actor.dtype}

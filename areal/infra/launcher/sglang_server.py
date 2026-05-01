@@ -53,6 +53,12 @@ def launch_server_cmd(
 
     if custom_env is not None:
         _env.update(custom_env)
+    _python_dir = os.path.dirname(command[0]) if command else ""
+    if _python_dir:
+        _env["PATH"] = f"{_python_dir}{os.pathsep}{_env.get('PATH', '')}"
+        _venv_dir = os.path.dirname(_python_dir)
+        if os.path.exists(os.path.join(_venv_dir, "pyvenv.cfg")):
+            _env["VIRTUAL_ENV"] = _venv_dir
 
     return subprocess.Popen(
         command,

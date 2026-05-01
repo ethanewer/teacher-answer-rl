@@ -21,6 +21,12 @@ export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 export HF_HOME="${HF_HOME:-/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache}"
 
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker is required for the current Terminal-Bench/Harbor eval workflow." >&2
+  echo "This node only has enroot-like runtimes; do not use enroot here because prior FUSE startup hung in D-state." >&2
+  exit 2
+fi
+
 cd "$REPO_ROOT"
 "$REPO_ROOT/.venv/bin/python" -m rlvr_demo.terminal_experiment write-harbor-eval-config \
   --output "$CONFIG_PATH" \

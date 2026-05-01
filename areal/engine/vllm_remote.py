@@ -262,6 +262,12 @@ class VLLMBackend:
         if vllm_cache_path:
             _env["VLLM_CACHE_ROOT"] = os.path.join(vllm_cache_path, str(uuid.uuid4()))
         _env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+        _python_dir = os.path.dirname(cmd[0]) if cmd else ""
+        if _python_dir:
+            _env["PATH"] = f"{_python_dir}{os.pathsep}{_env.get('PATH', '')}"
+            _venv_dir = os.path.dirname(_python_dir)
+            if os.path.exists(os.path.join(_venv_dir, "pyvenv.cfg")):
+                _env["VIRTUAL_ENV"] = _venv_dir
 
         logger.info(f"Launching vLLM server with command: {' '.join(cmd)}")
         return subprocess.Popen(

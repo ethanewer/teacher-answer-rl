@@ -1598,9 +1598,27 @@ class PPOCriticConfig(TrainEngineConfig):
     )
 
 
-def get_py_cmd(module: str, args: dict[str, Any]):
+def _normalize_python_executable(python_executable: str | None) -> str:
+    if python_executable is None or python_executable == "":
+        return sys.executable
+    return os.path.expandvars(os.path.expanduser(str(python_executable)))
+
+
+def _uses_external_python(python_executable: str | None) -> bool:
+    python_executable = _normalize_python_executable(python_executable)
+    try:
+        return Path(python_executable).resolve() != Path(sys.executable).resolve()
+    except OSError:
+        return python_executable != sys.executable
+
+
+def get_py_cmd(
+    module: str,
+    args: dict[str, Any],
+    python_executable: str | None = None,
+):
     # convert to flags
-    cmd = [sys.executable, "-m", module]
+    cmd = [_normalize_python_executable(python_executable), "-m", module]
     for k, v in args.items():
         if v is None or v is False or v == "" or (isinstance(v, list) and not v):
             continue
@@ -1661,6 +1679,9 @@ class vLLMConfig:
     max_lora_rank: int = 16  # vllm's default
     max_loras: int = 8  # override default
     lora_modules: list[str] | None = None  # lora_modules is automatically filled
+    # Launch the vLLM server with a Python from a backend-specific environment.
+    # This lets Megatron training keep a separate, throughput-oriented stack.
+    python_executable: str | None = None
 
     @staticmethod
     def build_args(
@@ -1703,7 +1724,13 @@ class vLLMConfig:
 
     @staticmethod
     def build_cmd_from_args(args: dict[str, Any]):
-        return get_py_cmd("areal.engine.vllm_ext.areal_vllm_server", args)
+        args = dict(args)
+        python_executable = args.pop("python_executable", None)
+        return get_py_cmd(
+            "areal.engine.vllm_ext.areal_vllm_server",
+            args,
+            python_executable=python_executable,
+        )
 
     @staticmethod
     def build_cmd(
@@ -1800,6 +1827,9 @@ class SGLangConfig:
 
     # Internal field, not exposed to users.
     enable_return_routed_experts: bool = False
+    # Launch the SGLang server with a Python from a backend-specific environment.
+    # This avoids installing SGLang's Torch/Triton stack into the Megatron trainer env.
+    python_executable: str | None = None
 
     # Use staticmethod to make OmegaConf happy.
     @staticmethod
@@ -1828,8 +1858,12 @@ class SGLangConfig:
 
     @staticmethod
     def build_cmd_from_args(args: dict[str, Any]):
+        args = dict(args)
+        python_executable = args.pop("python_executable", None)
         return get_py_cmd(
-            "areal.experimental.inference_service.sglang.launch_server", args
+            "areal.experimental.inference_service.sglang.launch_server",
+            args,
+            python_executable=python_executable,
         )
 
     @staticmethod
@@ -1875,10 +1909,11 @@ class SGLangConfig:
             args["host"] = host
         if port is not None:
             args["port"] = port
-        if not pkg_version.is_version_greater_or_equal("sglang", "0.4.9.post2"):
-            raise RuntimeError("Needs sglang>=0.4.9.post2 to run the code.")
-        if is_version_less("sglang", "0.4.10.post2"):
-            args.pop("max_loaded_loras", None)
+        if not _uses_external_python(sglang_config.python_executable):
+            if not pkg_version.is_version_greater_or_equal("sglang", "0.4.9.post2"):
+                raise RuntimeError("Needs sglang>=0.4.9.post2 to run the code.")
+            if is_version_less("sglang", "0.4.10.post2"):
+                args.pop("max_loaded_loras", None)
         return args
 
 

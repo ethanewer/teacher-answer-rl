@@ -3,6 +3,7 @@
 import getpass
 import os
 import re
+import shlex
 import signal as signal_module
 import subprocess
 import sys
@@ -338,8 +339,11 @@ def local_main(config, run_id: int = 0):
         base_seed = random_seed
         seed_arg = spec["seed_arg"]
         module = spec["module"]
+        launcher_python = os.environ.get("AREAL_LAUNCHER_PYTHON", sys.executable)
+        launcher_args = " ".join(shlex.quote(arg) for arg in sys.argv[1:])
         server_cmd = (
-            f"python3 -m {module} {' '.join(sys.argv[1:])} {seed_arg}={base_seed}"
+            f"{shlex.quote(launcher_python)} -m {module} "
+            f"{launcher_args} {seed_arg}={base_seed}"
         )
 
         # Launch inference servers.
@@ -398,7 +402,7 @@ def local_main(config, run_id: int = 0):
         )
         launcher.submit(
             job_name="trainer",
-            cmd=f"torchrun --nnodes 1 --nproc-per-node {nprocs} --master-addr localhost --master-port {find_free_ports(1, (10000, 50000))[0]} {' '.join(sys.argv[1:])}",
+            cmd=f"torchrun --nnodes 1 --nproc-per-node {nprocs} --master-addr localhost --master-port {find_free_ports(1, (10000, 50000))[0]} {' '.join(shlex.quote(arg) for arg in sys.argv[1:])}",
             gpu=gpu,
             env_vars={
                 **BASE_ENVIRONS,

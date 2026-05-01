@@ -355,11 +355,11 @@ def _cmd_preflight(args: argparse.Namespace) -> None:
     checks["glibc_exit_code"] = code
     checks["glibc"] = glibc
 
-    checks["can_run_terminal_envs"] = bool(checks["docker"] or checks["singularity"])
+    checks["can_run_terminal_envs"] = bool(checks["docker"])
     checks["notes"] = []
     if not checks["can_run_terminal_envs"]:
         checks["notes"].append(
-            "Terminal-Bench and Nemotron terminal GRPO require Docker or Singularity/Apptainer; only enroot was found if listed above."
+            "The current Terminus GRPO and Harbor eval paths use Terminal-Bench's DockerComposeManager and require Docker. Singularity/Apptainer is detected for visibility but is not wired into this workflow."
         )
     if len(checks["gpus"]) != 8:
         checks["notes"].append(

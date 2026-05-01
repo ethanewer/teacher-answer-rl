@@ -3,9 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-AREAL_VENV="${AREAL_VENV:-$REPO_ROOT/.venv-megatron}"
+DEFAULT_AREAL_VENV="$REPO_ROOT/.venv-megatron"
+if [[ ! -x "$DEFAULT_AREAL_VENV/bin/python" && -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  DEFAULT_AREAL_VENV="$REPO_ROOT/.venv"
+fi
+AREAL_VENV="${AREAL_VENV:-$DEFAULT_AREAL_VENV}"
 
 export PATH="$AREAL_VENV/bin:$PATH"
+export AREAL_LAUNCHER_PYTHON="${AREAL_LAUNCHER_PYTHON:-$AREAL_VENV/bin/python}"
+export AREAL_VLLM_PYTHON="${AREAL_VLLM_PYTHON:-$REPO_ROOT/.venv-rollout-vllm/bin/python}"
+export AREAL_SGLANG_PYTHON="${AREAL_SGLANG_PYTHON:-$REPO_ROOT/.venv-rollout-sglang/bin/python}"
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-enp71s0}"
 export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp71s0}"

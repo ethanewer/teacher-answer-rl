@@ -240,6 +240,12 @@ class SGLangBackend:
         _env = os.environ.copy()
         triton_cache_path = _env.get("TRITON_CACHE_PATH", TRITON_CACHE_PATH)
         _env["TRITON_CACHE_PATH"] = os.path.join(triton_cache_path, str(uuid.uuid4()))
+        _python_dir = os.path.dirname(cmd[0]) if cmd else ""
+        if _python_dir:
+            _env["PATH"] = f"{_python_dir}{os.pathsep}{_env.get('PATH', '')}"
+            _venv_dir = os.path.dirname(_python_dir)
+            if os.path.exists(os.path.join(_venv_dir, "pyvenv.cfg")):
+                _env["VIRTUAL_ENV"] = _venv_dir
 
         return subprocess.Popen(
             cmd,
