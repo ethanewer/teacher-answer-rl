@@ -1,10 +1,10 @@
-experiment_name: qwen3-4b-terminal-teacher-answer-rl-megatron-h200-1000
+experiment_name: qwen3-4b-terminal-teacher-answer-rl-megatron-h200-medium40960
 trial_name: trial0
 
 seed: 7
 enable_offload: false
-total_train_epochs: 3
-total_train_steps: 1000
+total_train_epochs: 1
+total_train_steps: null
 tokenizer_path: ${actor.path}
 
 cluster:
@@ -22,7 +22,7 @@ rollout:
   backend: "vllm:d4p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 512
+  max_concurrent_rollouts: 256
   queue_size: 8192
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 2
@@ -33,9 +33,9 @@ rollout:
   dump_to_file: true
 
 gconfig:
-  n_samples: 8
+  n_samples: 4
   min_new_tokens: 0
-  max_new_tokens: 1024
+  max_new_tokens: 2048
   greedy: false
   temperature: 0.6
   top_p: 0.95
@@ -44,14 +44,14 @@ gconfig:
 eval_gconfig:
   n_samples: 1
   min_new_tokens: 0
-  max_new_tokens: 1024
+  max_new_tokens: 2048
   greedy: false
   temperature: 0.6
   top_p: 0.95
   top_k: 20
 
 actor:
-  backend: "megatron:d4p1t1"
+  backend: "megatron:d1p1t4"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   path: Qwen/Qwen3-4B-Thinking-2507
@@ -60,8 +60,10 @@ actor:
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 65536
+    max_tokens_per_mb: 40960
     packing_algorithm: ffd
+  pad_to_maximum: true
+  enable_tree_training: true
   optimizer:
     type: adam
     lr: 3e-6
@@ -130,13 +132,13 @@ sglang:
   skip_tokenizer_init: true
   dtype: ${actor.dtype}
   max_running_requests: 256
-  context_length: 16384
+  context_length: 40960
   mem_fraction_static: 0.70
   attention_backend: flashinfer
   log_level: warning
   log_level_http: warning
   chunked_prefill_size: -1
-  max_prefill_tokens: 16384
+  max_prefill_tokens: 40960
 
 vllm:
   model: ${actor.path}
@@ -145,26 +147,27 @@ vllm:
   skip_tokenizer_init: false
   dtype: ${actor.dtype}
   max_num_seqs: 256
-  max_model_len: 16384
+  max_model_len: 40960
   gpu_memory_utilization: 0.80
-  no_enable_prefix_caching: true
+  no_enable_prefix_caching: false
   uvicorn_log_level: warning
 
 train_dataset:
   batch_size: 32
-  shuffle: true
+  shuffle: false
   pin_memory: true
   num_workers: 8
   path: nvidia/Nemotron-Terminal-Corpus
   split: train
   type: rl
-  max_length: 12000
+  max_length: 40960
   scheduling_spec: null
   dataset_kwargs:
     name: skill_based_medium
     split_part: train
     holdout_size: 512
-    shuffle_records: true
+    shuffle_records: false
+    shuffle_source_groups: true
     strip_prior_assistant_thinking: true
 
 valid_dataset:
@@ -175,7 +178,7 @@ valid_dataset:
   path: nvidia/Nemotron-Terminal-Corpus
   split: train
   type: rl
-  max_length: 12000
+  max_length: 40960
   scheduling_spec: null
   dataset_kwargs:
     name: skill_based_medium

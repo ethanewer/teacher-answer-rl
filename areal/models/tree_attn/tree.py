@@ -404,6 +404,7 @@ def build_packed_tree_batch(
 
     # Build packed outputs for each tree
     mbs: list[dict[str, Any]] = []
+    padded_mbs: list[dict[str, Any]] = []
     padding_lengths: list[int] = []
     padded_to_lengths: list[int] = []
 
@@ -455,6 +456,10 @@ def build_packed_tree_batch(
             **extra_data,
         }
         mbs.append(mb)
+        # Keep cu_seqlens for loss/stat aggregation only. If it is present in
+        # the Megatron forward input, the standard packed-sequence path rejects
+        # tree attention masks.
+        padded_mbs.append({k: v for k, v in mb.items() if k != "cu_seqlens"})
         padding_lengths.append(padded_size - num_tokens)
         padded_to_lengths.append(padded_size)
 
@@ -465,7 +470,7 @@ def build_packed_tree_batch(
         mb_spec=mb_spec,
         mbs=mbs,
         group_lens=[num for num in num_tokens_list],
-        padded_mbs=mbs,
+        padded_mbs=padded_mbs,
         padding_lengths=padding_lengths,
         padded_to_lengths=padded_to_lengths,
         _max_seqlen=max(padded_to_lengths),
@@ -683,6 +688,15 @@ def _pack_extra_data(
     extra_data: dict[str, Any] = {}
     seq_ids = trie.all_sequence_ids
     lens = [sequence_lens[sid].item() for sid in seq_ids]
+    extra_data["cu_seqlens"] = torch.nn.functional.pad(
+        torch.cumsum(
+            torch.tensor(lens, dtype=torch.int32, device=sequence_lens.device),
+            dim=0,
+            dtype=torch.int32,
+        ),
+        (1, 0),
+        value=0,
+    )
 
     # Pack tensors according to the order in trie.all_sequence_ids
     for key in packable_keys:

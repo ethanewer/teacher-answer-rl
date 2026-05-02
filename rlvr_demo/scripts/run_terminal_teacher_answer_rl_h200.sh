@@ -23,6 +23,9 @@ export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export HF_HOME="${HF_HOME:-/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/wbl-fast/usrs/ee/teacher-answer-rl/triton}"
 export TRITON_CACHE_PATH="${TRITON_CACHE_PATH:-$TRITON_CACHE_DIR}"
 export TRANSFORMERS_NO_TF="${TRANSFORMERS_NO_TF:-1}"
@@ -33,7 +36,12 @@ export PYTHONUNBUFFERED=1
 
 # The terminal teacher-answer reward should only score teacher commands/task_complete.
 export TEACHER_ANSWER_FORMAT_BONUS="${TEACHER_ANSWER_FORMAT_BONUS:-0.0}"
-export TEACHER_ANSWER_LENGTH_PENALTY="${TEACHER_ANSWER_LENGTH_PENALTY:-0.1}"
+export TEACHER_ANSWER_LENGTH_PENALTY="${TEACHER_ANSWER_LENGTH_PENALTY:-0.0}"
+export TERMINAL_EXPERIMENT_WALLCLOCK_START="${TERMINAL_EXPERIMENT_WALLCLOCK_START:-$(python - <<'PY'
+import time
+print(time.time())
+PY
+)}"
 
 if [[ "${1:-}" == "--config" ]]; then
   shift

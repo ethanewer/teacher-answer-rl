@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import getpass
+import json
 import os
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from transformers import PreTrainedTokenizerFast
@@ -31,6 +34,9 @@ class Saver:
         )
         self._async_mode = AsyncMode(config.mode)
         self._managers: dict[str, AsyncCheckpointManager] = {}
+        self._wallclock_start = float(
+            os.environ.get("TERMINAL_EXPERIMENT_WALLCLOCK_START", time.time())
+        )
 
     @staticmethod
     def get_save_root(
@@ -156,6 +162,45 @@ class Saver:
                 base_model_path=base_model_path,
             )
             engine.save(meta)
+        self._record_checkpoint_event(
+            path=path,
+            name=name,
+            epoch=epoch,
+            step=step,
+            global_step=global_step,
+        )
+
+    def _record_checkpoint_event(
+        self,
+        path: str,
+        name: str,
+        epoch: int,
+        step: int,
+        global_step: int,
+    ) -> None:
+        root = Saver.get_save_root(
+            self.config.experiment_name,
+            self.config.trial_name,
+            self.config.fileroot,
+        )
+        now = time.time()
+        record = {
+            "experiment_name": self.config.experiment_name,
+            "trial_name": self.config.trial_name,
+            "name": name,
+            "checkpoint_path": path,
+            "epoch": epoch,
+            "epoch_step": step,
+            "global_step": global_step,
+            "optimizer_step": global_step + 1,
+            "steps_per_epoch": self.ft_spec.steps_per_epoch,
+            "fractional_epoch": epoch + ((step + 1) / max(self.ft_spec.steps_per_epoch, 1)),
+            "timestamp_saved": datetime.now(UTC).isoformat(),
+            "elapsed_wall_clock_sec": now - self._wallclock_start,
+        }
+        event_path = os.path.join(root, "checkpoint_events.jsonl")
+        with open(event_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     def _async_save(
         self,

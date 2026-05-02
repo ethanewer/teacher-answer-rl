@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import getpass
+import json
 import os
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 import swanlab
 import torch.distributed as dist
@@ -117,6 +119,7 @@ class StatsLogger:
         self.summary_writer = None
         if self.config.tensorboard.path is not None:
             self.summary_writer = SummaryWriter(log_dir=self.config.tensorboard.path)
+        self.metrics_jsonl_path = os.path.join(self.get_log_path(self.config), "metrics.jsonl")
 
     def state_dict(self):
         return {
@@ -153,6 +156,7 @@ class StatsLogger:
         for i, item in enumerate(data):
             # Filter out counter keys for scalar variables
             item = {k: v for k, v in item.items() if not k.endswith("__count")}
+            self._append_metrics_jsonl(epoch, step, global_step, log_step + i, item)
 
             logger.info(f"Stats ({i + 1}/{len(data)}):")
             self.print_stats(item)
@@ -164,6 +168,29 @@ class StatsLogger:
                 for key, val in item.items():
                     self.summary_writer.add_scalar(f"{key}", val, log_step + i)
         self._last_commit_step = log_step + len(data) - 1
+
+    def _append_metrics_jsonl(
+        self,
+        epoch: int,
+        step: int,
+        global_step: int,
+        log_step: int,
+        metrics: dict[str, float],
+    ) -> None:
+        record = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "elapsed_wall_clock_sec": time.perf_counter() - self.start_time,
+            "epoch": epoch,
+            "epoch_step": step,
+            "global_step": global_step,
+            "optimizer_step": global_step + 1,
+            "log_step": log_step,
+            "steps_per_epoch": self.ft_spec.steps_per_epoch,
+            "fractional_epoch": epoch + ((step + 1) / max(self.ft_spec.steps_per_epoch, 1)),
+            "metrics": metrics,
+        }
+        with open(self.metrics_jsonl_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     def print_stats(self, stats: dict[str, float]):
         logger.info("\n" + tabulate_stats(stats))

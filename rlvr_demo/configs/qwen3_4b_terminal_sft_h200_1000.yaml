@@ -1,10 +1,10 @@
-experiment_name: qwen3-4b-terminal-sft-megatron-h200-1000
+experiment_name: qwen3-4b-terminal-sft-megatron-h200-medium40960
 trial_name: trial0
 
 seed: 7
 enable_offload: false
-total_train_epochs: 3
-total_train_steps: 1000
+total_train_epochs: 1
+total_train_steps: null
 tokenizer_path: ${actor.path}
 
 cluster:
@@ -19,7 +19,7 @@ scheduler:
   type: local
 
 actor:
-  backend: "megatron:d8p1t1"
+  backend: "megatron:d1p1t8"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   path: Qwen/Qwen3-4B-Thinking-2507
@@ -28,8 +28,10 @@ actor:
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 65536
+    max_tokens_per_mb: 40960
     packing_algorithm: ffd
+  pad_to_maximum: true
+  enable_tree_training: true
   optimizer:
     type: adam
     lr: 8e-6
@@ -73,19 +75,20 @@ actor:
 
 train_dataset:
   batch_size: 64
-  shuffle: true
+  shuffle: false
   pin_memory: true
   num_workers: 8
   path: nvidia/Nemotron-Terminal-Corpus
   split: train
   type: sft
-  max_length: 12000
+  max_length: 40960
   scheduling_spec: null
   dataset_kwargs:
     name: skill_based_medium
     split_part: train
     holdout_size: 512
-    shuffle_records: true
+    shuffle_records: false
+    shuffle_source_groups: true
     strip_prior_assistant_thinking: true
 
 valid_dataset:
@@ -96,7 +99,7 @@ valid_dataset:
   path: nvidia/Nemotron-Terminal-Corpus
   split: train
   type: sft
-  max_length: 12000
+  max_length: 40960
   scheduling_spec: null
   dataset_kwargs:
     name: skill_based_medium

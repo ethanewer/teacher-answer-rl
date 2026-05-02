@@ -209,3 +209,24 @@ sympy/
 rlvr_demo/data/*.jsonl
 rlvr_demo/results/
 rlvr_demo/**/__pycache__/
+
+# Local training, checkpoint, and benchmark artifacts
+areal_runs/
+checkpoints/
+**/checkpoints/
+**/terminal_bench_eval/
+**/harbor_jobs/
+**/eval_results/
+**/training_logs/
+hf_cache/
+huggingface_cache/
+harbor_datasets/
+terminal_bench_datasets/
+terminal-bench/
+events.out.tfevents*
+slurm-*.out
+slurm-*.err
+*.safetensors
+*.ckpt
+*.pt
+*.pth

@@ -206,6 +206,7 @@ def _partition_turns(
     holdout_size: int,
     seed: int,
     shuffle_records: bool,
+    shuffle_source_groups: bool = False,
 ) -> list[dict[str, Any]]:
     if split_part is None:
         selected = list(turns)
@@ -225,6 +226,17 @@ def _partition_turns(
 
     if shuffle_records:
         random.Random(seed).shuffle(selected)
+    elif shuffle_source_groups:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        group_order: list[str] = []
+        for turn in selected:
+            source_id = str(turn["source_id"])
+            if source_id not in grouped:
+                grouped[source_id] = []
+                group_order.append(source_id)
+            grouped[source_id].append(turn)
+        random.Random(seed).shuffle(group_order)
+        selected = [turn for source_id in group_order for turn in grouped[source_id]]
     return selected
 
 
@@ -304,6 +316,7 @@ def get_terminal_sft_dataset(
     holdout_size: int = 512,
     shuffle_rows: bool = False,
     shuffle_records: bool = True,
+    shuffle_source_groups: bool = False,
     strip_prior_assistant_thinking: bool = True,
     enable_thinking: bool = True,
     **_: Any,
@@ -320,7 +333,14 @@ def get_terminal_sft_dataset(
         strip_prior_assistant_thinking=strip_prior_assistant_thinking,
         shuffle_rows=shuffle_rows,
     )
-    turns = _partition_turns(turns, split_part, holdout_size, seed, shuffle_records)
+    turns = _partition_turns(
+        turns,
+        split_part,
+        holdout_size,
+        seed,
+        shuffle_records,
+        shuffle_source_groups=shuffle_source_groups,
+    )
     if limit is not None:
         if limit <= 0:
             raise ValueError(f"limit must be positive when set, got {limit}")
@@ -350,6 +370,7 @@ def get_terminal_teacher_answer_rl_dataset(
     holdout_size: int = 512,
     shuffle_rows: bool = False,
     shuffle_records: bool = True,
+    shuffle_source_groups: bool = False,
     strip_prior_assistant_thinking: bool = True,
     enable_thinking: bool = True,
     **_: Any,
@@ -379,7 +400,12 @@ def get_terminal_teacher_answer_rl_dataset(
         split_turns.append(item)
 
     split_turns = _partition_turns(
-        split_turns, split_part, holdout_size, seed, shuffle_records
+        split_turns,
+        split_part,
+        holdout_size,
+        seed,
+        shuffle_records,
+        shuffle_source_groups=shuffle_source_groups,
     )
     if limit is not None:
         if limit <= 0:
