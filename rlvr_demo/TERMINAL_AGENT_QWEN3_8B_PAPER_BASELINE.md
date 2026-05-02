@@ -117,6 +117,8 @@ Primary files:
 - `rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml`
 - `rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh`
 - `rlvr_demo/scripts/run_terminal_bench_eval_harbor.sh`
+- Full recipe document:
+  `rlvr_demo/TERMINAL_AGENT_FULL_RECIPES.md`
 
 ## SFT Baselines
 
