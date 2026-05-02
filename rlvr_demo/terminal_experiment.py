@@ -190,6 +190,30 @@ def _model_info(max_input_tokens: int, max_output_tokens: int) -> dict[str, Any]
 
 
 def _cmd_write_harbor_eval_config(args: argparse.Namespace) -> None:
+    task_names = args.task or TERMINAL_BENCH_TASKS
+    agent_kwargs: dict[str, Any] = {
+        "parser_name": "json",
+        "api_base": args.api_base,
+        "temperature": args.temperature,
+        "max_turns": args.max_turns,
+        "enable_summarize": args.enable_summarize,
+        "proactive_summarization_threshold": args.proactive_summarization_threshold,
+        "collect_rollout_details": args.collect_rollout_details,
+        "model_info": _model_info(args.max_input_tokens, args.max_output_tokens),
+        "interleaved_thinking": args.interleaved_thinking,
+        "record_terminal_session": args.record_terminal_session,
+        "store_all_messages": args.store_all_messages,
+        "llm_kwargs": {
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "max_tokens": args.max_output_tokens,
+        },
+    }
+    if args.reasoning_effort is not None:
+        agent_kwargs["reasoning_effort"] = args.reasoning_effort
+    if args.max_thinking_tokens is not None:
+        agent_kwargs["max_thinking_tokens"] = args.max_thinking_tokens
+
     config = {
         "job_name": args.job_name,
         "jobs_dir": str(args.jobs_dir),
@@ -206,28 +230,14 @@ def _cmd_write_harbor_eval_config(args: argparse.Namespace) -> None:
             {
                 "name": "terminus-2",
                 "model_name": args.litellm_model,
-                "kwargs": {
-                    "parser_name": "json",
-                    "api_base": args.api_base,
-                    "temperature": 0.6,
-                    "max_turns": args.max_turns,
-                    "enable_summarize": True,
-                    "proactive_summarization_threshold": 8000,
-                    "collect_rollout_details": args.collect_rollout_details,
-                    "model_info": _model_info(args.max_input_tokens, args.max_output_tokens),
-                    "llm_kwargs": {
-                        "top_p": 0.95,
-                        "top_k": 20,
-                        "max_tokens": args.max_output_tokens,
-                    },
-                },
+                "kwargs": agent_kwargs,
             }
         ],
         "datasets": [
             {
                 "name": "terminal-bench",
                 "version": "2.0",
-                "task_names": TERMINAL_BENCH_TASKS,
+                "task_names": task_names,
             }
         ],
     }
@@ -248,9 +258,6 @@ def _extract_reward(result: dict[str, Any]) -> float | None:
 def _cmd_summarize_harbor(args: argparse.Namespace) -> None:
     rows: list[dict[str, Any]] = []
     for result_path in sorted(args.jobs_dir.rglob("result.json")):
-        if result_path.parent == args.jobs_dir or result_path.parent.parent == args.jobs_dir:
-            # Keep trial result files, skip top-level job summaries.
-            continue
         try:
             data = json.loads(result_path.read_text())
         except json.JSONDecodeError:
@@ -395,14 +402,28 @@ def main() -> None:
     eval_cfg.add_argument("--api-base", default="http://127.0.0.1:30000/v1")
     eval_cfg.add_argument("--litellm-model", default="openai/Qwen3-4B-Thinking-2507")
     eval_cfg.add_argument("--environment", default="docker")
+    eval_cfg.add_argument("--task", action="append", choices=TERMINAL_BENCH_TASKS)
     eval_cfg.add_argument("--n-attempts", type=int, default=5)
     eval_cfg.add_argument("--n-concurrent", type=int, default=10)
     eval_cfg.add_argument("--max-turns", type=int, default=100)
     eval_cfg.add_argument("--max-input-tokens", type=int, default=131072)
     eval_cfg.add_argument("--max-output-tokens", type=int, default=4096)
+    eval_cfg.add_argument("--temperature", type=float, default=0.6)
+    eval_cfg.add_argument("--top-p", type=float, default=0.95)
+    eval_cfg.add_argument("--top-k", type=int, default=20)
     eval_cfg.add_argument("--override-cpus", type=int, default=8)
     eval_cfg.add_argument("--override-memory-mb", type=int, default=32768)
     eval_cfg.add_argument("--collect-rollout-details", action="store_true")
+    eval_cfg.add_argument("--enable-summarize", action=argparse.BooleanOptionalAction, default=True)
+    eval_cfg.add_argument("--proactive-summarization-threshold", type=int, default=8000)
+    eval_cfg.add_argument("--interleaved-thinking", action="store_true")
+    eval_cfg.add_argument("--record-terminal-session", action=argparse.BooleanOptionalAction, default=True)
+    eval_cfg.add_argument("--store-all-messages", action="store_true")
+    eval_cfg.add_argument(
+        "--reasoning-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh", "max", "default"],
+    )
+    eval_cfg.add_argument("--max-thinking-tokens", type=int)
     eval_cfg.set_defaults(func=_cmd_write_harbor_eval_config)
 
     summarize = sub.add_parser("summarize-harbor")

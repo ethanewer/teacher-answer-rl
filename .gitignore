@@ -211,6 +211,13 @@ rlvr_demo/results/
 rlvr_demo/**/__pycache__/
 
 # Local training, checkpoint, and benchmark artifacts
+/areal_runs/
+/terminal-bench/
+/terminal_bench/
+/rlvr_demo/checkpoints/
+/rlvr_demo/terminal_bench_eval/
+/rlvr_demo/harbor_jobs/
+/rlvr_demo/training_logs/
 areal_runs/
 checkpoints/
 **/checkpoints/
@@ -218,6 +225,8 @@ checkpoints/
 **/harbor_jobs/
 **/eval_results/
 **/training_logs/
+*.predictions.jsonl
+*.slurm.out
 **/name_resolve/
 **/*.predictions.jsonl
 hf_cache/

@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FILEROOT="${FILEROOT:-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b}"
 SFT_CONFIG="${SFT_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200.yaml}"
 TEACHER_CONFIG="${TEACHER_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_paper_h200.yaml}"
+TEACHER_NEMOTRON_CONFIG="${TEACHER_NEMOTRON_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml}"
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
 DATASET="${DATASET:-nvidia/Nemotron-Terminal-Corpus}"
 DATASET_CONFIG="${DATASET_CONFIG:-skill_based_medium}"
@@ -13,8 +14,10 @@ MAX_LENGTH="${MAX_LENGTH:-32768}"
 SEED="${SEED:-7}"
 SFT_EXPERIMENT="${SFT_EXPERIMENT:-qwen3-8b-terminal-sft-skill-medium-1k-b128-24step-h200}"
 TEACHER_EXPERIMENT="${TEACHER_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-skill-medium-1k-b64-s2-48step-2048-h200}"
+TEACHER_NEMOTRON_EXPERIMENT="${TEACHER_NEMOTRON_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200}"
 RESULT_DIR="${RESULT_DIR:-$FILEROOT/results/qwen3-8b-skill-medium-1k-b128-vs-b64-s2-2048}"
 EVAL_DIR="${EVAL_DIR:-$FILEROOT/results/eval_qwen3_8b_skill_medium_1k_b128_b64_s2_2048}"
+TEACHER_NEMOTRON_EVAL_DIR="${TEACHER_NEMOTRON_EVAL_DIR:-$FILEROOT/results/eval_teacher_from_nemotron_40step}"
 EVAL_LIMIT_ROWS="${EVAL_LIMIT_ROWS:-1000}"
 EVAL_SKIP_TURNS="${EVAL_SKIP_TURNS:-0}"
 EVAL_LIMIT="${EVAL_LIMIT:-32}"
@@ -47,8 +50,14 @@ Commands:
   teacher-full     Run the Qwen3-8B teacher-answer-RL comparison recipe.
   teacher-skill-final
                    Run the final single-node skill_based_medium teacher-answer-RL comparison.
+  teacher-from-nemotron-smoke
+                   Smoke-test teacher-answer-RL initialized from nvidia/Nemotron-Terminal-8B.
+  teacher-from-nemotron-full
+                   Run the optimized teacher-answer-RL recipe initialized from released SFT.
   eval             Offline-evaluate final SFT, teacher closest to SFT time, and final teacher.
   eval-baselines   Offline-evaluate Qwen3-8B base and released Nemotron-Terminal-8B.
+  eval-teacher-from-nemotron
+                   Offline-evaluate released SFT and all teacher-from-Nemotron checkpoints.
   compile          Compile checkpoint logs, eval metrics, and comparison table.
 EOF
 }
@@ -114,6 +123,28 @@ print(event["elapsed_wall_clock_sec"])
 PY
 }
 
+checkpoint_for_global_step() {
+  local experiment="$1"
+  local global_step="$2"
+  "$AREAL_VENV/bin/python" - "$FILEROOT/checkpoints/$(id -un)/$experiment/trial0/checkpoint_events.jsonl" "$global_step" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+events_path = Path(sys.argv[1])
+target_step = int(sys.argv[2])
+events = []
+if events_path.exists():
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(json.loads(line))
+matches = [event for event in events if int(event["global_step"]) == target_step]
+if not matches:
+    raise SystemExit(f"no checkpoint for global step {target_step} in {events_path}")
+print(matches[-1]["checkpoint_path"])
+PY
+}
+
 run_eval_one() {
   local name="$1"
   local checkpoint="$2"
@@ -164,6 +195,35 @@ run_baseline_eval() {
   run_eval_one nemotron_terminal_8b nvidia/Nemotron-Terminal-8B 1 &
   local pid_nemotron=$!
   wait "$pid_base" "$pid_nemotron"
+}
+
+run_teacher_from_nemotron_eval() {
+  EVAL_DIR="$TEACHER_NEMOTRON_EVAL_DIR"
+  mkdir -p "$EVAL_DIR"
+  local ckpt7
+  local ckpt15
+  local ckpt23
+  local ckpt31
+  local ckpt39
+  ckpt7="$(checkpoint_for_global_step "$TEACHER_NEMOTRON_EXPERIMENT" 7)"
+  ckpt15="$(checkpoint_for_global_step "$TEACHER_NEMOTRON_EXPERIMENT" 15)"
+  ckpt23="$(checkpoint_for_global_step "$TEACHER_NEMOTRON_EXPERIMENT" 23)"
+  ckpt31="$(checkpoint_for_global_step "$TEACHER_NEMOTRON_EXPERIMENT" 31)"
+  ckpt39="$(checkpoint_for_global_step "$TEACHER_NEMOTRON_EXPERIMENT" 39)"
+
+  run_eval_one nemotron_terminal_8b nvidia/Nemotron-Terminal-8B 0 &
+  local pid_baseline=$!
+  run_eval_one teacher_step7 "$ckpt7" 1 &
+  local pid_step7=$!
+  run_eval_one teacher_step15 "$ckpt15" 2 &
+  local pid_step15=$!
+  run_eval_one teacher_step23 "$ckpt23" 3 &
+  local pid_step23=$!
+  run_eval_one teacher_step31 "$ckpt31" 4 &
+  local pid_step31=$!
+  run_eval_one teacher_step39 "$ckpt39" 5 &
+  local pid_step39=$!
+  wait "$pid_baseline" "$pid_step7" "$pid_step15" "$pid_step23" "$pid_step31" "$pid_step39"
 }
 
 compile_results() {
@@ -263,11 +323,28 @@ case "$cmd" in
       saver.freq_steps=8 \
       "$@"
     ;;
+  teacher-from-nemotron-smoke)
+    bash rlvr_demo/scripts/run_terminal_teacher_answer_rl_h200.sh "$TEACHER_NEMOTRON_CONFIG" \
+      experiment_name=qwen3-8b-terminal-teacher-answer-rl-from-nemotron-smoke \
+      total_train_epochs=1 total_train_steps=2 \
+      +train_dataset.dataset_kwargs.limit_rows=64 \
+      +train_dataset.dataset_kwargs.limit=32 \
+      train_dataset.batch_size=8 rollout.consumer_batch_size=8 \
+      saver.freq_steps=1 \
+      vllm.max_num_seqs=32 rollout.max_concurrent_rollouts=32 rollout.queue_size=256 \
+      "$@"
+    ;;
+  teacher-from-nemotron-full)
+    bash rlvr_demo/scripts/run_terminal_teacher_answer_rl_h200.sh "$TEACHER_NEMOTRON_CONFIG" "$@"
+    ;;
   eval)
     run_comparison_eval "$@"
     ;;
   eval-baselines)
     run_baseline_eval "$@"
+    ;;
+  eval-teacher-from-nemotron)
+    run_teacher_from_nemotron_eval "$@"
     ;;
   compile)
     compile_results "$@"

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 JOB_NAME LITELLM_MODEL [API_BASE] [JOBS_DIR]" >&2
-  echo "Example: $0 base openai/Qwen3-4B-Thinking-2507 http://127.0.0.1:30000/v1 /wbl-fast/usrs/ee/teacher-answer-rl/harbor_jobs" >&2
+  echo "Usage: $0 JOB_NAME LITELLM_MODEL [API_BASE] [JOBS_DIR] [write-config-args...]" >&2
+  echo "Example: $0 base openai/Qwen3-4B-Thinking-2507 http://127.0.0.1:30000/v1 /wbl-fast/usrs/ee/teacher-answer-rl/harbor_jobs --task fix-git" >&2
   exit 2
 fi
 
@@ -12,8 +12,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 JOB_NAME="$1"
 LITELLM_MODEL="$2"
-API_BASE="${3:-http://127.0.0.1:30000/v1}"
-JOBS_DIR="${4:-/wbl-fast/usrs/ee/teacher-answer-rl/harbor_jobs}"
+shift 2
+API_BASE="${1:-http://127.0.0.1:30000/v1}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+JOBS_DIR="${1:-/wbl-fast/usrs/ee/teacher-answer-rl/harbor_jobs}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+EXTRA_CONFIG_ARGS=("$@")
 CONFIG_DIR="${REPO_ROOT}/rlvr_demo/results/terminal_bench_eval_configs"
 CONFIG_PATH="${CONFIG_DIR}/${JOB_NAME}.yaml"
 
@@ -33,6 +41,7 @@ cd "$REPO_ROOT"
   --job-name "$JOB_NAME" \
   --jobs-dir "$JOBS_DIR" \
   --api-base "$API_BASE" \
-  --litellm-model "$LITELLM_MODEL"
+  --litellm-model "$LITELLM_MODEL" \
+  "${EXTRA_CONFIG_ARGS[@]}"
 
 exec "$REPO_ROOT/.venv/bin/harbor" run --config "$CONFIG_PATH" --yes
