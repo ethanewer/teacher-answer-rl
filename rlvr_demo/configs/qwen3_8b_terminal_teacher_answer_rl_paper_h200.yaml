@@ -1,10 +1,14 @@
-experiment_name: qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-2epoch-h200
+experiment_name: qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-5720step-h200
 trial_name: trial0
 
 seed: 7
 enable_offload: false
+# The released full mix contains 366,154 trajectories and 2,316,755
+# trainable teacher-answer turns. 5,720 steps x batch 128 gives 732,160
+# teacher prompts, matching the local SFT run's 2-epoch trajectory-example
+# count while keeping the RL comparison near the SFT compute scale.
 total_train_epochs: 2
-total_train_steps: null
+total_train_steps: 5720
 tokenizer_path: ${actor.path}
 
 cluster:

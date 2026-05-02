@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FILEROOT="${FILEROOT:-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b}"
-SFT_CONFIG="${SFT_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200.yaml}"
+SFT_CONFIG="${SFT_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200_slurm4.yaml}"
 TEACHER_CONFIG="${TEACHER_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_paper_h200.yaml}"
 TEACHER_NEMOTRON_CONFIG="${TEACHER_NEMOTRON_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml}"
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
@@ -12,8 +12,8 @@ DATASET="${DATASET:-nvidia/Nemotron-Terminal-Corpus}"
 DATASET_CONFIG="${DATASET_CONFIG:-full_mix}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
 SEED="${SEED:-7}"
-SFT_EXPERIMENT="${SFT_EXPERIMENT:-qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200}"
-TEACHER_EXPERIMENT="${TEACHER_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-2epoch-h200}"
+SFT_EXPERIMENT="${SFT_EXPERIMENT:-qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4}"
+TEACHER_EXPERIMENT="${TEACHER_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-5720step-h200}"
 TEACHER_NEMOTRON_EXPERIMENT="${TEACHER_NEMOTRON_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200}"
 RESULT_DIR="${RESULT_DIR:-$FILEROOT/results/qwen3-8b-released-fullmix-nofilter-sft-vs-teacher-rl}"
 EVAL_DIR="${EVAL_DIR:-$FILEROOT/results/eval_qwen3_8b_released_fullmix_nofilter}"
@@ -54,6 +54,10 @@ Commands:
                    Smoke-test teacher-answer-RL initialized from nvidia/Nemotron-Terminal-8B.
   teacher-from-nemotron-full
                    Run the optimized teacher-answer-RL recipe initialized from released SFT.
+  serve-sft-baseline
+                   Serve nvidia/Nemotron-Terminal-8B for Terminal-Bench.
+  tb-easy10-sft-baseline
+                   Submit 10-task x 5-trial Terminal-Bench eval for released SFT.
   eval             Offline-evaluate final SFT, teacher closest to SFT time, and final teacher.
   eval-baselines   Offline-evaluate Qwen3-8B base and released Nemotron-Terminal-8B.
   eval-teacher-from-nemotron
@@ -340,6 +344,18 @@ case "$cmd" in
     ;;
   teacher-from-nemotron-full)
     bash rlvr_demo/scripts/run_terminal_teacher_answer_rl_h200.sh "$TEACHER_NEMOTRON_CONFIG" "$@"
+    ;;
+  serve-sft-baseline)
+    exec bash rlvr_demo/scripts/serve_terminal_model_vllm.sh \
+      nvidia/Nemotron-Terminal-8B terminal-sft-baseline 30080 "$@"
+    ;;
+  tb-easy10-sft-baseline)
+    bash rlvr_demo/scripts/run_terminal_bench_eval_slurm_cpu.sh \
+      tb-nemotron8b-easy10-5 \
+      openai/terminal-sft-baseline \
+      "http://${SERVER_HOST:-10.0.159.57}:${SERVER_PORT:-30080}/v1" \
+      "$FILEROOT/terminal_bench_eval/harbor_jobs/tb-nemotron8b-easy10-5" \
+      "$@"
     ;;
   eval)
     run_comparison_eval "$@"
