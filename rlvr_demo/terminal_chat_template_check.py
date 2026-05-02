@@ -77,6 +77,9 @@ def main() -> None:
         strip_prior_assistant_thinking=True,
     )[args.turn_offset]
 
+    prompt_injects_think_prefix = prompt_text.endswith("<|im_start|>assistant\n<think>\n")
+    prompt_starts_assistant_turn = prompt_text.endswith("<|im_start|>assistant\n")
+    target_starts_with_open_think = target_text.lstrip().startswith("<think>")
     report = {
         "model": args.model,
         "dataset": args.dataset,
@@ -87,16 +90,19 @@ def main() -> None:
         "history_assistant_messages": sum(
             message["role"] == "assistant" for message in turn["messages"]
         ),
-        "prompt_has_generation_think_prefix": prompt_text.endswith(
-            "<|im_start|>assistant\n<think>\n"
-        ),
-        "prior_history_has_think_block": "<think>" in prompt_text[:- len("<|im_start|>assistant\n<think>\n")],
+        "prompt_starts_assistant_turn": prompt_starts_assistant_turn,
+        "prompt_injects_think_prefix": prompt_injects_think_prefix,
+        "prior_history_has_think_block": "<think>" in prompt_text[: -len("<|im_start|>assistant\n")]
+        if prompt_starts_assistant_turn
+        else "<think>" in prompt_text,
         "full_text_has_duplicate_think_prefix": "<think>\n<think>" in full_text,
         "sft_loss_prompt_tokens": prompt_len,
         "sft_loss_target_tokens": sum(tokenized["loss_mask"]),
-        "sft_target_starts_with_open_think": target_text.lstrip().startswith("<think>"),
+        "sft_target_starts_with_open_think": target_starts_with_open_think,
         "sft_target_contains_close_think": "</think>" in target_text,
         "sft_target_contains_commands": '"commands"' in target_text,
+        "current_thinking_is_trainable": target_starts_with_open_think
+        or prompt_injects_think_prefix,
         "teacher_student_prefix_contains_commands": '"commands"' in teacher["student_prefix"],
         "teacher_answer_starts_with_commands": teacher["teacher_answer"].lstrip().startswith(
             '"commands"'
@@ -110,16 +116,16 @@ def main() -> None:
     print(text)
 
     required_true = [
-        "prompt_has_generation_think_prefix",
+        "prompt_starts_assistant_turn",
         "sft_target_contains_close_think",
         "sft_target_contains_commands",
+        "current_thinking_is_trainable",
         "teacher_answer_starts_with_commands",
         "teacher_answer_contains_task_complete",
     ]
     required_false = [
         "prior_history_has_think_block",
         "full_text_has_duplicate_think_prefix",
-        "sft_target_starts_with_open_think",
         "teacher_student_prefix_contains_commands",
     ]
     failures = [

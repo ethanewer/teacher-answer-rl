@@ -218,11 +218,14 @@ checkpoints/
 **/harbor_jobs/
 **/eval_results/
 **/training_logs/
+**/name_resolve/
+**/*.predictions.jsonl
 hf_cache/
 huggingface_cache/
 harbor_datasets/
 terminal_bench_datasets/
 terminal-bench/
+triton/
 events.out.tfevents*
 slurm-*.out
 slurm-*.err

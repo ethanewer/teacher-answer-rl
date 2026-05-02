@@ -6,14 +6,23 @@ import hashlib
 import json
 import random
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 from datasets import Dataset, load_dataset
+from huggingface_hub import hf_hub_download
+import pyarrow.parquet as pq
+from torch.utils.data import Dataset as TorchDataset
 
 
 TERMINAL_CORPUS = "nvidia/Nemotron-Terminal-Corpus"
 TERMINAL_CORPUS_CONFIG = "skill_based_medium"
+TERMINAL_CORPUS_FULL_MIX_CONFIGS = (
+    "dataset_adapters",
+    "skill_based_easy",
+    "skill_based_medium",
+    "skill_based_mixed",
+)
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -25,6 +34,11 @@ _COMMAND_KEY_PATTERNS = (
     '\r\n"commands"',
     '\r\n  "commands"',
     '\r\n    "commands"',
+)
+_TERMINAL_CORPUS_ADAPTER_FILES = (
+    "dataset_adapters/math.parquet",
+    "dataset_adapters/code.parquet",
+    "dataset_adapters/swe.parquet",
 )
 
 
@@ -56,6 +70,47 @@ def _coerce_messages(conversations: Iterable[dict[str, Any]]) -> list[dict[str, 
             continue
         messages.append({"role": role, "content": content})
     return messages
+
+
+def _normalize_config_names(name: str | Sequence[str]) -> list[str]:
+    if isinstance(name, str):
+        if "," in name:
+            names = [part.strip() for part in name.split(",")]
+        elif name == "full_mix":
+            names = list(TERMINAL_CORPUS_FULL_MIX_CONFIGS)
+        else:
+            names = [name]
+    else:
+        names = [str(part).strip() for part in name]
+    names = [part for part in names if part]
+    if not names:
+        raise ValueError("At least one dataset config name is required")
+    return names
+
+
+def _iter_adapter_rows(
+    path: str,
+    limit_rows: int | None,
+) -> Iterator[dict[str, Any]]:
+    """Yield dataset-adapter rows directly from parquet files.
+
+    `datasets==4.8.5` with the current `pyarrow` fails to materialize the
+    adapter config because the split has nested list<struct<...>> columns in
+    single large row groups. Reading batches through `pyarrow.parquet` avoids
+    that conversion path and still consumes the released HF parquet files.
+    """
+    emitted = 0
+    for file_path in _TERMINAL_CORPUS_ADAPTER_FILES:
+        local_path = hf_hub_download(path, file_path, repo_type="dataset")
+        parquet_file = pq.ParquetFile(local_path)
+        for batch in parquet_file.iter_batches(batch_size=1024):
+            for row in batch.to_pylist():
+                row["_dataset_config"] = "dataset_adapters"
+                row["_dataset_file"] = file_path
+                yield row
+                emitted += 1
+                if limit_rows is not None and emitted >= limit_rows:
+                    return
 
 
 def _history_messages(
@@ -184,20 +239,84 @@ def iter_terminal_turns(
 
 def _load_terminal_rows(
     path: str,
-    name: str,
+    name: str | Sequence[str],
     split: str,
     seed: int,
     limit_rows: int | None,
     shuffle_rows: bool,
 ) -> list[dict[str, Any]]:
-    dataset = load_dataset(path=path, name=name, split=split)
+    config_names = _normalize_config_names(name)
+    if limit_rows is not None and limit_rows <= 0:
+        raise ValueError(f"limit_rows must be positive when set, got {limit_rows}")
+
+    rows: list[dict[str, Any]] = []
+    remaining = limit_rows
+    for config_name in config_names:
+        if config_name == "dataset_adapters" and path == TERMINAL_CORPUS and split == "train":
+            before = len(rows)
+            rows.extend(_iter_adapter_rows(path, remaining))
+            if remaining is not None:
+                remaining -= len(rows) - before
+        else:
+            dataset = load_dataset(path=path, name=config_name, split=split)
+            if shuffle_rows:
+                dataset = dataset.shuffle(seed=seed)
+            if remaining is not None:
+                take = min(remaining, len(dataset))
+                dataset = dataset.select(range(take))
+                remaining -= take
+            for row in dataset:
+                item = dict(row)
+                item["_dataset_config"] = config_name
+                rows.append(item)
+        if remaining == 0:
+            break
+
+    if shuffle_rows and len(config_names) > 1:
+        random.Random(seed).shuffle(rows)
+    return rows
+
+
+def _iter_terminal_rows(
+    path: str,
+    name: str | Sequence[str],
+    split: str,
+    seed: int,
+    limit_rows: int | None,
+    shuffle_rows: bool,
+) -> Iterator[dict[str, Any]]:
+    """Yield released terminal rows without forcing a full intermediate list."""
     if shuffle_rows:
-        dataset = dataset.shuffle(seed=seed)
-    if limit_rows is not None:
-        if limit_rows <= 0:
-            raise ValueError(f"limit_rows must be positive when set, got {limit_rows}")
-        dataset = dataset.select(range(min(limit_rows, len(dataset))))
-    return [dict(row) for row in dataset]
+        yield from _load_terminal_rows(path, name, split, seed, limit_rows, shuffle_rows)
+        return
+
+    config_names = _normalize_config_names(name)
+    if limit_rows is not None and limit_rows <= 0:
+        raise ValueError(f"limit_rows must be positive when set, got {limit_rows}")
+
+    remaining = limit_rows
+    for config_name in config_names:
+        if config_name == "dataset_adapters" and path == TERMINAL_CORPUS and split == "train":
+            emitted = 0
+            for row in _iter_adapter_rows(path, remaining):
+                emitted += 1
+                yield row
+            if remaining is not None:
+                remaining -= emitted
+                if remaining == 0:
+                    break
+            continue
+
+        dataset = load_dataset(path=path, name=config_name, split=split)
+        take = len(dataset) if remaining is None else min(remaining, len(dataset))
+        for idx in range(take):
+            item = dict(dataset[idx])
+            item["_dataset_config"] = config_name
+            yield item
+        if remaining is not None:
+            remaining -= take
+            if remaining == 0:
+                break
 
 
 def _partition_turns(
@@ -238,6 +357,205 @@ def _partition_turns(
         random.Random(seed).shuffle(group_order)
         selected = [turn for source_id in group_order for turn in grouped[source_id]]
     return selected
+
+
+def _partition_refs(
+    refs: list[dict[str, Any]],
+    split_part: str | None,
+    holdout_size: int,
+    seed: int,
+    shuffle_records: bool,
+    shuffle_source_groups: bool = False,
+) -> list[dict[str, Any]]:
+    if split_part is None:
+        selected = list(refs)
+    else:
+        if split_part not in {"train", "validation"}:
+            raise ValueError("split_part must be 'train' or 'validation'")
+        source_ids = sorted({str(ref["source_id"]) for ref in refs})
+        random.Random(seed).shuffle(source_ids)
+        holdout_ids = set(source_ids[: min(holdout_size, len(source_ids))])
+        if split_part == "validation":
+            selected = [ref for ref in refs if ref["source_id"] in holdout_ids]
+        else:
+            selected = [ref for ref in refs if ref["source_id"] not in holdout_ids]
+
+    if shuffle_records:
+        random.Random(seed).shuffle(selected)
+    elif shuffle_source_groups:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        group_order: list[str] = []
+        for ref in selected:
+            source_id = str(ref["source_id"])
+            if source_id not in grouped:
+                grouped[source_id] = []
+                group_order.append(source_id)
+            grouped[source_id].append(ref)
+        random.Random(seed).shuffle(group_order)
+        selected = [ref for source_id in group_order for ref in grouped[source_id]]
+    return selected
+
+
+def _prepare_terminal_rows_and_refs(
+    path: str,
+    name: str | Sequence[str],
+    split: str,
+    seed: int,
+    limit_rows: int | None,
+    shuffle_rows: bool,
+    require_teacher_answer: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    refs: list[dict[str, Any]] = []
+    for raw_idx, raw in enumerate(
+        _iter_terminal_rows(path, name, split, seed, limit_rows, shuffle_rows), start=1
+    ):
+        messages = _coerce_messages(raw.get("conversations") or [])
+        if not messages:
+            continue
+        task = str(raw.get("task", ""))
+        episode = str(raw.get("episode", ""))
+        source_id = stable_hash(f"{task}\n{episode}\n{json.dumps(messages, sort_keys=True)}")
+        row_idx = len(rows)
+        rows.append(
+            {
+                "messages": messages,
+                "task": task,
+                "episode": episode,
+                "source_id": source_id,
+                "agent": str(raw.get("agent", "")),
+                "model": str(raw.get("model", "")),
+                "model_provider": str(raw.get("model_provider", "")),
+            }
+        )
+        for assistant_idx, msg in enumerate(messages):
+            if msg["role"] != "assistant":
+                continue
+            if assistant_idx == 0 or messages[assistant_idx - 1]["role"] != "user":
+                continue
+            if not msg["content"].strip():
+                continue
+            if require_teacher_answer:
+                try:
+                    split_terminus_teacher_answer(msg["content"].strip())
+                except TerminalAnswerSplitError:
+                    continue
+            refs.append(
+                {
+                    "row_idx": row_idx,
+                    "assistant_idx": assistant_idx,
+                    "source_id": source_id,
+                }
+            )
+        if raw_idx % 25000 == 0:
+            print(
+                f"[terminal_agent_data] prepared {raw_idx} rows, "
+                f"{len(refs)} assistant turns",
+                flush=True,
+            )
+    print(
+        f"[terminal_agent_data] prepared {len(rows)} usable rows, "
+        f"{len(refs)} assistant turns",
+        flush=True,
+    )
+    return rows, refs
+
+
+class _TerminalTurnDataset(TorchDataset):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        refs: list[dict[str, Any]],
+        strip_prior_assistant_thinking: bool,
+    ) -> None:
+        self.rows = rows
+        self.refs = refs
+        self.strip_prior_assistant_thinking = strip_prior_assistant_thinking
+
+    def __len__(self) -> int:
+        return len(self.refs)
+
+    def _turn_for_ref(self, ref: dict[str, Any]) -> dict[str, Any]:
+        row = self.rows[int(ref["row_idx"])]
+        assistant_idx = int(ref["assistant_idx"])
+        messages = row["messages"]
+        return {
+            "messages": _history_messages(
+                messages,
+                assistant_idx,
+                self.strip_prior_assistant_thinking,
+            ),
+            "assistant": messages[assistant_idx]["content"].strip(),
+            "task": row["task"],
+            "episode": row["episode"],
+            "source_id": row["source_id"],
+            "turn_idx": assistant_idx,
+            "agent": row["agent"],
+            "model": row["model"],
+            "model_provider": row["model_provider"],
+        }
+
+
+class TerminalSFTLazyDataset(_TerminalTurnDataset):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        refs: list[dict[str, Any]],
+        tokenizer,
+        max_length: int | None,
+        strip_prior_assistant_thinking: bool,
+        enable_thinking: bool,
+    ) -> None:
+        super().__init__(rows, refs, strip_prior_assistant_thinking)
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.enable_thinking = enable_thinking
+
+    def __getitem__(self, idx: int) -> dict[str, list[int]]:
+        for offset in range(len(self.refs)):
+            ref = self.refs[(idx + offset) % len(self.refs)]
+            tokenized = _tokenize_sft_turn(
+                self._turn_for_ref(ref),
+                tokenizer=self.tokenizer,
+                max_length=self.max_length,
+                enable_thinking=self.enable_thinking,
+            )
+            if tokenized is not None:
+                return tokenized
+        raise IndexError("No tokenizable terminal SFT records found")
+
+
+class TerminalTeacherAnswerLazyDataset(_TerminalTurnDataset):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        refs: list[dict[str, Any]],
+        strip_prior_assistant_thinking: bool,
+    ) -> None:
+        super().__init__(rows, refs, strip_prior_assistant_thinking)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        for offset in range(len(self.refs)):
+            turn = self._turn_for_ref(self.refs[(idx + offset) % len(self.refs)])
+            try:
+                student_prefix, teacher_answer = split_terminus_teacher_answer(
+                    str(turn["assistant"])
+                )
+            except TerminalAnswerSplitError:
+                continue
+            return {
+                "messages": turn["messages"],
+                "teacher_answer": teacher_answer,
+                "student_prefix": student_prefix,
+                "task": turn["task"],
+                "episode": turn["episode"],
+                "source_id": turn["source_id"],
+                "turn_idx": turn["turn_idx"],
+                "agent": turn["agent"],
+                "model": turn["model"],
+                "model_provider": turn["model_provider"],
+            }
+        raise IndexError("No usable terminal teacher-answer RL records found")
 
 
 def _tokenize_sft_turn(
@@ -284,7 +602,7 @@ def _tokenize_sft_turn(
 
 def _terminal_turns(
     path: str,
-    name: str,
+    name: str | Sequence[str],
     split: str,
     seed: int,
     limit_rows: int | None,
@@ -308,7 +626,7 @@ def get_terminal_sft_dataset(
     split: str = "train",
     tokenizer=None,
     max_length: int | None = None,
-    name: str = TERMINAL_CORPUS_CONFIG,
+    name: str | Sequence[str] = TERMINAL_CORPUS_CONFIG,
     seed: int = 1,
     limit: int | None = None,
     limit_rows: int | None = None,
@@ -319,11 +637,44 @@ def get_terminal_sft_dataset(
     shuffle_source_groups: bool = False,
     strip_prior_assistant_thinking: bool = True,
     enable_thinking: bool = True,
+    lazy_tokenize: bool = False,
     **_: Any,
 ) -> Dataset:
     """Load Terminal-Corpus turns and tokenize them for AReaL SFT."""
     if tokenizer is None:
         raise ValueError("tokenizer is required")
+    if lazy_tokenize:
+        rows, refs = _prepare_terminal_rows_and_refs(
+            path=path,
+            name=name,
+            split=split,
+            seed=seed,
+            limit_rows=limit_rows,
+            shuffle_rows=shuffle_rows,
+        )
+        refs = _partition_refs(
+            refs,
+            split_part,
+            holdout_size,
+            seed,
+            shuffle_records,
+            shuffle_source_groups=shuffle_source_groups,
+        )
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError(f"limit must be positive when set, got {limit}")
+            refs = refs[:limit]
+        if not refs:
+            raise ValueError("No usable terminal SFT records found")
+        return TerminalSFTLazyDataset(
+            rows=rows,
+            refs=refs,
+            tokenizer=tokenizer,
+            max_length=max_length,
+            strip_prior_assistant_thinking=strip_prior_assistant_thinking,
+            enable_thinking=enable_thinking,
+        )
+
     turns = _terminal_turns(
         path=path,
         name=name,
@@ -362,7 +713,7 @@ def get_terminal_teacher_answer_rl_dataset(
     split: str = "train",
     tokenizer=None,
     max_length: int | None = None,
-    name: str = TERMINAL_CORPUS_CONFIG,
+    name: str | Sequence[str] = TERMINAL_CORPUS_CONFIG,
     seed: int = 1,
     limit: int | None = None,
     limit_rows: int | None = None,
@@ -373,9 +724,40 @@ def get_terminal_teacher_answer_rl_dataset(
     shuffle_source_groups: bool = False,
     strip_prior_assistant_thinking: bool = True,
     enable_thinking: bool = True,
+    lazy_tokenize: bool = False,
     **_: Any,
 ) -> Dataset:
     """Load Terminal-Corpus turns for teacher-answer likelihood RL."""
+    if lazy_tokenize:
+        rows, refs = _prepare_terminal_rows_and_refs(
+            path=path,
+            name=name,
+            split=split,
+            seed=seed,
+            limit_rows=limit_rows,
+            shuffle_rows=shuffle_rows,
+            require_teacher_answer=True,
+        )
+        refs = _partition_refs(
+            refs,
+            split_part,
+            holdout_size,
+            seed,
+            shuffle_records,
+            shuffle_source_groups=shuffle_source_groups,
+        )
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError(f"limit must be positive when set, got {limit}")
+            refs = refs[:limit]
+        if not refs:
+            raise ValueError("No usable terminal teacher-answer RL records found")
+        return TerminalTeacherAnswerLazyDataset(
+            rows=rows,
+            refs=refs,
+            strip_prior_assistant_thinking=strip_prior_assistant_thinking,
+        )
+
     turns = _terminal_turns(
         path=path,
         name=name,

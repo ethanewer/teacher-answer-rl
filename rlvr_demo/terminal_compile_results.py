@@ -77,11 +77,15 @@ def _checkpoint_rows(run_dir: Path, log_dir: Path, evals: dict[str, dict[str, An
         batch_size = int(config["train_dataset"]["batch_size"])
         examples_seen = (global_step + 1) * batch_size
         elapsed_wallclock_seconds = event["elapsed_wall_clock_sec"]
+        dataset_kwargs = config["train_dataset"].get("dataset_kwargs") or {}
         loss_reward_metrics = {
             key: value
             for key, value in metric.items()
             if key.startswith("sft/")
             or key.startswith("teacher_")
+            or key.startswith("teacher_answer_")
+            or key.startswith("ppo_actor/task_reward")
+            or key.startswith("ppo_actor/final_reward")
             or key in {"ppo/loss", "ppo/approx_kl", "actor/loss"}
         }
         rows.append(
@@ -90,16 +94,14 @@ def _checkpoint_rows(run_dir: Path, log_dir: Path, evals: dict[str, dict[str, An
                 "base_model": config["actor"]["path"],
                 "dataset": config["train_dataset"]["path"],
                 "dataset_split": config["train_dataset"]["split"],
-                "dataset_config": (config["train_dataset"].get("dataset_kwargs") or {}).get(
-                    "name", ""
-                ),
-                "split_part": (config["train_dataset"].get("dataset_kwargs") or {}).get(
-                    "split_part", ""
-                ),
+                "dataset_config": dataset_kwargs.get("name", ""),
+                "split_part": dataset_kwargs.get("split_part", ""),
                 "max_length": config["train_dataset"].get("max_length"),
-                "configured_limit": (config["train_dataset"].get("dataset_kwargs") or {}).get(
-                    "limit"
-                ),
+                "configured_limit": dataset_kwargs.get("limit")
+                if dataset_kwargs.get("limit") is not None
+                else dataset_kwargs.get("limit_rows"),
+                "configured_limit_rows": dataset_kwargs.get("limit_rows"),
+                "configured_limit_turns": dataset_kwargs.get("limit"),
                 "examples_seen": examples_seen,
                 "tasks_seen": examples_seen,
                 "examples_tasks_seen": examples_seen,

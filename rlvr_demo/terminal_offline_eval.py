@@ -234,6 +234,10 @@ def main() -> None:
     args = parser.parse_args()
 
     started = time.time()
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
