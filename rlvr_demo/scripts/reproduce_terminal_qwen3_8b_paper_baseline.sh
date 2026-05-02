@@ -9,14 +9,14 @@ TEACHER_CONFIG="${TEACHER_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal
 TEACHER_NEMOTRON_CONFIG="${TEACHER_NEMOTRON_CONFIG:-$REPO_ROOT/rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml}"
 MODEL="${MODEL:-Qwen/Qwen3-8B}"
 DATASET="${DATASET:-nvidia/Nemotron-Terminal-Corpus}"
-DATASET_CONFIG="${DATASET_CONFIG:-skill_based_medium}"
+DATASET_CONFIG="${DATASET_CONFIG:-full_mix}"
 MAX_LENGTH="${MAX_LENGTH:-32768}"
 SEED="${SEED:-7}"
-SFT_EXPERIMENT="${SFT_EXPERIMENT:-qwen3-8b-terminal-sft-skill-medium-1k-b128-24step-h200}"
-TEACHER_EXPERIMENT="${TEACHER_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-skill-medium-1k-b64-s2-48step-2048-h200}"
+SFT_EXPERIMENT="${SFT_EXPERIMENT:-qwen3-8b-terminal-sft-released-fullmix-nofilter-b128-2epoch-h200}"
+TEACHER_EXPERIMENT="${TEACHER_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-2epoch-h200}"
 TEACHER_NEMOTRON_EXPERIMENT="${TEACHER_NEMOTRON_EXPERIMENT:-qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200}"
-RESULT_DIR="${RESULT_DIR:-$FILEROOT/results/qwen3-8b-skill-medium-1k-b128-vs-b64-s2-2048}"
-EVAL_DIR="${EVAL_DIR:-$FILEROOT/results/eval_qwen3_8b_skill_medium_1k_b128_b64_s2_2048}"
+RESULT_DIR="${RESULT_DIR:-$FILEROOT/results/qwen3-8b-released-fullmix-nofilter-sft-vs-teacher-rl}"
+EVAL_DIR="${EVAL_DIR:-$FILEROOT/results/eval_qwen3_8b_released_fullmix_nofilter}"
 TEACHER_NEMOTRON_EVAL_DIR="${TEACHER_NEMOTRON_EVAL_DIR:-$FILEROOT/results/eval_teacher_from_nemotron_40step}"
 EVAL_LIMIT_ROWS="${EVAL_LIMIT_ROWS:-1000}"
 EVAL_SKIP_TURNS="${EVAL_SKIP_TURNS:-0}"
@@ -45,11 +45,11 @@ Commands:
   data-report      Summarize released-corpus mix and sampled token lengths.
   sft-smoke        Run a 4-step Qwen3-8B SFT smoke test on the mixed corpus.
   sft-full         Run the paper-style Qwen3-8B SFT baseline: 2 epochs, batch 128.
-  sft-skill-final  Run the final single-node skill_based_medium SFT comparison.
+  sft-skill-final  Legacy small skill_based_medium SFT comparison.
   teacher-smoke    Run a 4-step Qwen3-8B teacher-answer-RL smoke test.
   teacher-full     Run the Qwen3-8B teacher-answer-RL comparison recipe.
   teacher-skill-final
-                   Run the final single-node skill_based_medium teacher-answer-RL comparison.
+                   Legacy small skill_based_medium teacher-answer-RL comparison.
   teacher-from-nemotron-smoke
                    Smoke-test teacher-answer-RL initialized from nvidia/Nemotron-Terminal-8B.
   teacher-from-nemotron-full
@@ -156,7 +156,7 @@ run_eval_one() {
   CUDA_VISIBLE_DEVICES="$gpu" "$AREAL_VENV/bin/python" -m rlvr_demo.terminal_offline_eval \
     --checkpoint "$checkpoint" \
     --dataset "$DATASET" \
-    --dataset-config skill_based_medium \
+    --dataset-config "$DATASET_CONFIG" \
     --split train \
     --limit-rows "$EVAL_LIMIT_ROWS" \
     --skip-turns "$EVAL_SKIP_TURNS" \
@@ -308,6 +308,10 @@ case "$cmd" in
       "$@"
     ;;
   teacher-full)
+    if [[ -z "${TERMINAL_TEACHER_INIT_PATH:-}" ]]; then
+      TERMINAL_TEACHER_INIT_PATH="$(checkpoint_from_events "$SFT_EXPERIMENT" final)"
+      export TERMINAL_TEACHER_INIT_PATH
+    fi
     bash rlvr_demo/scripts/run_terminal_teacher_answer_rl_h200.sh "$TEACHER_CONFIG" "$@"
     ;;
   teacher-skill-final)

@@ -25,6 +25,27 @@ TERMINAL_BENCH_TASKS = [
     "constraints-scheduling",
     "pypi-server",
 ]
+TERMINAL_BENCH_EASY10_TASKS = [
+    "fix-git",
+    "git-leak-recovery",
+    "log-summary-date-ranges",
+    "multi-source-data-merger",
+    "nginx-request-logging",
+    "vulnerable-secret",
+    "constraints-scheduling",
+    "regex-log",
+    "sqlite-db-truncate",
+    "modernize-scientific-stack",
+]
+TERMINAL_BENCH_TASK_CHOICES = sorted(
+    {
+        *TERMINAL_BENCH_TASKS,
+        *TERMINAL_BENCH_EASY10_TASKS,
+        "break-filter-js-from-html",
+        "count-dataset-tokens",
+        "sanitize-git-repo",
+    }
+)
 
 SYNTHETIC_TASK_REPO = "nvidia/Nemotron-Terminal-Synthetic-Tasks"
 SYNTHETIC_MEDIUM_FILES = [
@@ -190,7 +211,7 @@ def _model_info(max_input_tokens: int, max_output_tokens: int) -> dict[str, Any]
 
 
 def _cmd_write_harbor_eval_config(args: argparse.Namespace) -> None:
-    task_names = args.task or TERMINAL_BENCH_TASKS
+    task_names = args.task or TERMINAL_BENCH_EASY10_TASKS
     agent_kwargs: dict[str, Any] = {
         "parser_name": "json",
         "api_base": args.api_base,
@@ -402,7 +423,7 @@ def main() -> None:
     eval_cfg.add_argument("--api-base", default="http://127.0.0.1:30000/v1")
     eval_cfg.add_argument("--litellm-model", default="openai/Qwen3-4B-Thinking-2507")
     eval_cfg.add_argument("--environment", default="docker")
-    eval_cfg.add_argument("--task", action="append", choices=TERMINAL_BENCH_TASKS)
+    eval_cfg.add_argument("--task", action="append", choices=TERMINAL_BENCH_TASK_CHOICES)
     eval_cfg.add_argument("--n-attempts", type=int, default=5)
     eval_cfg.add_argument("--n-concurrent", type=int, default=10)
     eval_cfg.add_argument("--max-turns", type=int, default=100)

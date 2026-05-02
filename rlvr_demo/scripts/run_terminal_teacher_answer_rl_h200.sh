@@ -34,7 +34,8 @@ export USE_FLAX="${USE_FLAX:-0}"
 export TF_CPP_MIN_LOG_LEVEL="${TF_CPP_MIN_LOG_LEVEL:-3}"
 export PYTHONUNBUFFERED=1
 
-# The terminal teacher-answer reward should only score teacher commands/task_complete.
+# The sampled assistant prefix is optimized with a scalar reward from the
+# teacher commands/task_complete continuation likelihood.
 export TEACHER_ANSWER_FORMAT_BONUS="${TEACHER_ANSWER_FORMAT_BONUS:-0.0}"
 export TEACHER_ANSWER_LENGTH_PENALTY="${TEACHER_ANSWER_LENGTH_PENALTY:-0.0}"
 export TERMINAL_EXPERIMENT_WALLCLOCK_START="${TERMINAL_EXPERIMENT_WALLCLOCK_START:-$(python - <<'PY'

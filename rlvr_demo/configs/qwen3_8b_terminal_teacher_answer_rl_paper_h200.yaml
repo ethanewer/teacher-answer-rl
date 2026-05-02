@@ -1,4 +1,4 @@
-experiment_name: qwen3-8b-terminal-teacher-answer-rl-paper-mix-h200
+experiment_name: qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-2epoch-h200
 trial_name: trial0
 
 seed: 7
@@ -33,7 +33,7 @@ rollout:
   dump_to_file: true
 
 gconfig:
-  n_samples: 4
+  n_samples: 2
   min_new_tokens: 0
   max_new_tokens: 2048
   max_tokens: 32768
@@ -54,10 +54,11 @@ eval_gconfig:
 
 actor:
   # Four H200s train the actor while four H200s serve rollout replicas.
-  backend: "megatron:d1p1t4"
+  # DP=2/TP=2 improves actor update throughput on H200 while keeping memory headroom.
+  backend: "megatron:d2p1t2"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen3-8B
+  path: ${oc.env:TERMINAL_TEACHER_INIT_PATH,Qwen/Qwen3-8B}
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -69,7 +70,7 @@ actor:
   enable_tree_training: true
   optimizer:
     type: adam
-    lr: 3e-6
+    lr: 1e-6
     weight_decay: 0.01
     beta1: 0.9
     beta2: 0.999
@@ -156,7 +157,7 @@ vllm:
   uvicorn_log_level: warning
 
 train_dataset:
-  batch_size: 32
+  batch_size: 128
   shuffle: false
   pin_memory: true
   num_workers: 8
@@ -167,8 +168,8 @@ train_dataset:
   scheduling_spec: null
   dataset_kwargs:
     name: full_mix
-    split_part: train
-    holdout_size: 512
+    split_part: null
+    holdout_size: 0
     shuffle_records: false
     shuffle_source_groups: true
     strip_prior_assistant_thinking: true

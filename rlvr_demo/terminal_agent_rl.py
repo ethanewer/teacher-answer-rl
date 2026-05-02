@@ -21,6 +21,17 @@ from rlvr_demo.teacher_answer_rl import (
 )
 from rlvr_demo.terminal_agent_data import terminal_command_key_patterns
 
+COMMAND_STOP_STRINGS = (
+    '\n"commands"',
+    '\n  "commands"',
+    '\n    "commands"',
+    '\n      "commands"',
+    '\r\n"commands"',
+    '\r\n  "commands"',
+    '\r\n    "commands"',
+    '\r\n      "commands"',
+)
+
 
 def _find_subsequence(tokens: list[int], pattern: list[int]) -> int | None:
     if not pattern or len(pattern) > len(tokens):
@@ -34,10 +45,11 @@ def _find_subsequence(tokens: list[int], pattern: list[int]) -> int | None:
 class TerminalTeacherAnswerRLWorkflow(RolloutWorkflow):
     """Teacher-answer RL for Terminus JSON command payloads.
 
-    The rollout samples everything the student wants to write. For policy loss and
-    reward conditioning, generated tokens at the first ``"commands"`` key and after
-    are masked out. The reward pass then appends the teacher's commands through
-    ``task_complete`` and scores only those appended answer tokens.
+    The rollout starts from a fresh assistant turn and samples the student's
+    reasoning/prefix up to the top-level ``"commands"`` line. The sampled prefix
+    is the policy span trained by PPO. The reward pass appends the teacher's
+    commands/task_complete continuation and uses its likelihood as the scalar
+    reward for the sampled policy span.
     """
 
     def __init__(
@@ -51,7 +63,13 @@ class TerminalTeacherAnswerRLWorkflow(RolloutWorkflow):
             from areal.utils.hf_utils import load_hf_tokenizer
 
             self.tokenizer = load_hf_tokenizer(self.tokenizer)
-        self.gconfig = gconfig.new_with_stop_and_pad_token_ids(self.tokenizer)
+        stop = list(gconfig.stop or [])
+        for command_stop in COMMAND_STOP_STRINGS:
+            if command_stop not in stop:
+                stop.append(command_stop)
+        self.gconfig = gconfig.new(stop=stop).new_with_stop_and_pad_token_ids(
+            self.tokenizer
+        )
         self.enable_thinking = enable_thinking
         self.command_key_patterns = terminal_command_key_patterns(self.tokenizer)
 

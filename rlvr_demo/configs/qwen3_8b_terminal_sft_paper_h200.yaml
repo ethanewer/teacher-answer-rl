@@ -1,4 +1,4 @@
-experiment_name: qwen3-8b-terminal-sft-paper-mix-h200
+experiment_name: qwen3-8b-terminal-sft-released-fullmix-nofilter-b128-2epoch-h200
 trial_name: trial0
 
 seed: 7
@@ -20,8 +20,9 @@ scheduler:
 
 actor:
   # Paper recipe uses Qwen3-8B, global batch 128, micro-batch 1/GPU,
-  # max sequence length 32768. On this single H200 node we use TP=8.
-  backend: "megatron:d1p1t8"
+  # max sequence length 32768. On this single H200 node, DP=4/TP=2 gives
+  # better throughput than sharding one replica across all 8 H200s.
+  backend: "megatron:d4p1t2"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   path: Qwen/Qwen3-8B
@@ -87,8 +88,8 @@ train_dataset:
   scheduling_spec: null
   dataset_kwargs:
     name: full_mix
-    split_part: train
-    holdout_size: 512
+    split_part: null
+    holdout_size: 0
     shuffle_records: false
     shuffle_source_groups: true
     strip_prior_assistant_thinking: true

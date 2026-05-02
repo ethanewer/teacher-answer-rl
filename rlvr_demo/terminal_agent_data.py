@@ -23,6 +23,11 @@ TERMINAL_CORPUS_FULL_MIX_CONFIGS = (
     "skill_based_medium",
     "skill_based_mixed",
 )
+TERMINAL_CORPUS_RELEASED_SYNTHETIC_CONFIGS = (
+    "skill_based_easy",
+    "skill_based_medium",
+    "skill_based_mixed",
+)
 
 _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -78,6 +83,12 @@ def _normalize_config_names(name: str | Sequence[str]) -> list[str]:
             names = [part.strip() for part in name.split(",")]
         elif name == "full_mix":
             names = list(TERMINAL_CORPUS_FULL_MIX_CONFIGS)
+        elif name in {
+            "skill_based_all",
+            "synthetic_released",
+            "synthetic_released_no_filter",
+        }:
+            names = list(TERMINAL_CORPUS_RELEASED_SYNTHETIC_CONFIGS)
         else:
             names = [name]
     else:
@@ -183,12 +194,12 @@ def _find_top_level_json_key(text: str, key: str) -> int | None:
 
 
 def split_terminus_teacher_answer(content: str) -> tuple[str, str]:
-    """Split a Terminus response into student reasoning prefix and teacher answer.
+    """Split a Terminus response into generated-prefix target and teacher answer.
 
     The split point is the top-level ``"commands"`` field in the first JSON object.
-    The reasoning prefix retains everything before that key, including the trailing
-    comma/newline after ``"plan"``. The teacher answer starts on the ``commands``
-    line and includes ``task_complete`` and the closing brace.
+    The prefix is the span the student should generate from a fresh assistant turn
+    during teacher-answer-RL. The teacher answer starts on the ``commands`` line
+    and includes ``task_complete`` and the closing brace.
     """
     command_key_idx = _find_top_level_json_key(content, "commands")
     if command_key_idx is None:
