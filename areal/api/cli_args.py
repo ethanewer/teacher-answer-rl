@@ -2502,6 +2502,18 @@ class SchedulerConfig:
     reward_functioncall_config: dict = field(default_factory=dict)
     reward_model_path: str = field(default="")
     reward_model_service_url: str = field(default="http://localhost:30000/classify")
+    # SlurmScheduler options. Kept here so Hydra/OmegaConf can drive native
+    # cluster launches from recipe YAMLs instead of relying on constructor
+    # defaults that assume a site-specific apptainer image.
+    container_type: str = field(
+        default="apptainer", metadata={"choices": ["apptainer", "none"]}
+    )
+    container_mounts: str | None = field(default="/storage:/storage")
+    srun_additional_args: str = field(
+        default="--unbuffered --mpi=pmi2 -K --chdir $PWD"
+    )
+    startup_timeout: float = field(default=300.0)
+    health_check_interval: float = field(default=5.0)
 
 
 @dataclass

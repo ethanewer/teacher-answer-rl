@@ -105,6 +105,12 @@ class SlurmScheduler(Scheduler):
             self.fileroot = exp_config.cluster.fileroot
             self.cluster_name = exp_config.cluster.cluster_name
             self.enable_tms_offload = exp_config.enable_offload
+            if exp_config.scheduler is not None:
+                container_type = exp_config.scheduler.container_type
+                container_mounts = exp_config.scheduler.container_mounts
+                srun_additional_args = exp_config.scheduler.srun_additional_args
+                startup_timeout = exp_config.scheduler.startup_timeout
+                health_check_interval = exp_config.scheduler.health_check_interval
         if self.experiment_name is None or self.trial_name is None:
             raise ValueError("experiment_name and trial_name must be provided")
 
@@ -868,6 +874,11 @@ class SlurmScheduler(Scheduler):
         env_vars_dict = spec.env_vars.copy() if spec.env_vars else {}
 
         bash_cmds = (spec.additional_bash_cmds or []).copy()
+        if self.container_type == "none":
+            bash_cmds = [
+                f"export {key}={shlex.quote(str(value))}"
+                for key, value in env_vars_dict.items()
+            ] + bash_cmds
 
         # Set CUDA_VISIBLE_DEVICES based on SLURM_LOCALID before any Python imports.
         # This MUST happen before Python starts, otherwise CUDA runtime ignores the
