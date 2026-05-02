@@ -569,6 +569,161 @@ class TerminalTeacherAnswerLazyDataset(_TerminalTurnDataset):
         raise IndexError("No usable terminal teacher-answer RL records found")
 
 
+def _prepare_terminal_rows_only(
+    path: str,
+    name: str | Sequence[str],
+    split: str,
+    seed: int,
+    limit_rows: int | None,
+    shuffle_rows: bool,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw_idx, raw in enumerate(
+        _iter_terminal_rows(path, name, split, seed, limit_rows, shuffle_rows), start=1
+    ):
+        messages = _coerce_messages(raw.get("conversations") or [])
+        if not any(msg["role"] == "assistant" for msg in messages):
+            continue
+        task = str(raw.get("task", ""))
+        episode = str(raw.get("episode", ""))
+        rows.append(
+            {
+                "messages": messages,
+                "task": task,
+                "episode": episode,
+                "source_id": stable_hash(
+                    f"{task}\n{episode}\n{json.dumps(messages, sort_keys=True)}"
+                ),
+                "agent": str(raw.get("agent", "")),
+                "model": str(raw.get("model", "")),
+                "model_provider": str(raw.get("model_provider", "")),
+            }
+        )
+        if raw_idx % 25000 == 0:
+            print(
+                f"[terminal_agent_data] prepared {raw_idx} rows, "
+                f"{len(rows)} usable trajectories",
+                flush=True,
+            )
+    print(
+        f"[terminal_agent_data] prepared {len(rows)} usable trajectories",
+        flush=True,
+    )
+    return rows
+
+
+def _partition_rows(
+    rows: list[dict[str, Any]],
+    split_part: str | None,
+    holdout_size: int,
+    seed: int,
+    shuffle_records: bool,
+) -> list[dict[str, Any]]:
+    if split_part is None:
+        selected = list(rows)
+    else:
+        if split_part not in {"train", "validation"}:
+            raise ValueError("split_part must be 'train' or 'validation'")
+        source_ids = sorted({str(row["source_id"]) for row in rows})
+        random.Random(seed).shuffle(source_ids)
+        holdout_ids = set(source_ids[: min(holdout_size, len(source_ids))])
+        if split_part == "validation":
+            selected = [row for row in rows if row["source_id"] in holdout_ids]
+        else:
+            selected = [row for row in rows if row["source_id"] not in holdout_ids]
+
+    if shuffle_records:
+        random.Random(seed).shuffle(selected)
+    return selected
+
+
+def _encode_text(tokenizer, text: str) -> list[int]:
+    return list(tokenizer.encode(text, add_special_tokens=False))
+
+
+def _tokenize_sft_trajectory(
+    row: dict[str, Any],
+    tokenizer,
+    max_length: int | None,
+    truncate_long: bool,
+) -> dict[str, list[int]] | None:
+    """Tokenize a complete Terminus trajectory with all assistant spans supervised.
+
+    Qwen3's HF chat template strips thinking content from prior assistant turns.
+    For paper-scale SFT, we need one trajectory row with every assistant response
+    supervised, so this serializer mirrors Qwen's ChatML tokens while preserving
+    the released assistant content and applying the loss mask only to assistant
+    content plus the assistant end-of-message token.
+    """
+    input_ids: list[int] = []
+    loss_mask: list[int] = []
+    for msg in row["messages"]:
+        role = msg["role"]
+        content = str(msg["content"])
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+
+        if role == "assistant":
+            header_ids = _encode_text(tokenizer, "<|im_start|>assistant\n")
+            body_ids = _encode_text(tokenizer, content.strip() + "<|im_end|>\n")
+            input_ids.extend(header_ids)
+            loss_mask.extend([0] * len(header_ids))
+            input_ids.extend(body_ids)
+            loss_mask.extend([1] * len(body_ids))
+        elif role == "tool":
+            # Match Qwen's no-tools fallback for tool messages closely enough for
+            # the terminal corpus. Current released rows are user/assistant only.
+            text = f"<|im_start|>user\n<tool_response>\n{content}\n</tool_response><|im_end|>\n"
+            ids = _encode_text(tokenizer, text)
+            input_ids.extend(ids)
+            loss_mask.extend([0] * len(ids))
+        else:
+            ids = _encode_text(tokenizer, f"<|im_start|>{role}\n{content}<|im_end|>\n")
+            input_ids.extend(ids)
+            loss_mask.extend([0] * len(ids))
+
+    if not any(loss_mask):
+        return None
+    if max_length is not None and len(input_ids) > max_length:
+        if not truncate_long:
+            return None
+        input_ids = input_ids[:max_length]
+        loss_mask = loss_mask[:max_length]
+        if not any(loss_mask):
+            return None
+    return {"input_ids": input_ids, "loss_mask": loss_mask}
+
+
+class TerminalSFTTrajectoryLazyDataset(TorchDataset):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        tokenizer,
+        max_length: int | None,
+        truncate_long: bool,
+    ) -> None:
+        self.rows = rows
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.truncate_long = truncate_long
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, idx: int) -> dict[str, list[int]]:
+        for offset in range(len(self.rows)):
+            row = self.rows[(idx + offset) % len(self.rows)]
+            tokenized = _tokenize_sft_trajectory(
+                row,
+                tokenizer=self.tokenizer,
+                max_length=self.max_length,
+                truncate_long=self.truncate_long,
+            )
+            if tokenized is not None:
+                return tokenized
+        raise IndexError("No tokenizable terminal SFT trajectories found")
+
+
 def _tokenize_sft_turn(
     turn: dict[str, Any],
     tokenizer,
@@ -649,11 +804,38 @@ def get_terminal_sft_dataset(
     strip_prior_assistant_thinking: bool = True,
     enable_thinking: bool = True,
     lazy_tokenize: bool = False,
+    sft_format: str = "turn",
+    truncate_long: bool = False,
     **_: Any,
 ) -> Dataset:
     """Load Terminal-Corpus turns and tokenize them for AReaL SFT."""
     if tokenizer is None:
         raise ValueError("tokenizer is required")
+    if sft_format not in {"turn", "trajectory"}:
+        raise ValueError("sft_format must be 'turn' or 'trajectory'")
+    if sft_format == "trajectory":
+        rows = _prepare_terminal_rows_only(
+            path=path,
+            name=name,
+            split=split,
+            seed=seed,
+            limit_rows=limit_rows,
+            shuffle_rows=shuffle_rows,
+        )
+        rows = _partition_rows(rows, split_part, holdout_size, seed, shuffle_records)
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError(f"limit must be positive when set, got {limit}")
+            rows = rows[:limit]
+        if not rows:
+            raise ValueError("No usable terminal SFT trajectories found")
+        return TerminalSFTTrajectoryLazyDataset(
+            rows=rows,
+            tokenizer=tokenizer,
+            max_length=max_length,
+            truncate_long=truncate_long,
+        )
+
     if lazy_tokenize:
         rows, refs = _prepare_terminal_rows_and_refs(
             path=path,

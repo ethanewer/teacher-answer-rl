@@ -1,4 +1,4 @@
-experiment_name: qwen3-8b-terminal-sft-released-fullmix-nofilter-b128-2epoch-h200
+experiment_name: qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200
 trial_name: trial0
 
 seed: 7
@@ -95,6 +95,8 @@ train_dataset:
     strip_prior_assistant_thinking: true
     enable_thinking: true
     lazy_tokenize: true
+    sft_format: trajectory
+    truncate_long: true
 
 valid_dataset: null
 

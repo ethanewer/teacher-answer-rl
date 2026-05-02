@@ -1715,7 +1715,7 @@ class MegatronEngine(TrainEngine):
                 parallel_size=tp_size,
             )
             recommended_min_n_mbs = 2 * pp_size if pp_size > 1 else 1
-            self.logger.info(
+            self.logger.debug(
                 f"Packed tree #microbatch: {len(mb_list)}, microbatch #tokens: {mb_list.group_lens}, "
                 f"padded to: {mb_list.padded_to_lengths}, padding lengths: {mb_list.padding_lengths}."
             )
