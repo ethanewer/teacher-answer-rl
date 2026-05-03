@@ -156,6 +156,11 @@ class SFTTrainer:
         total_epochs = config.total_train_epochs
         steps_per_epoch = len(self.train_dataloader)
         max_steps = total_epochs * steps_per_epoch
+        configured_max_steps = (
+            min(max_steps, config.total_train_steps)
+            if config.total_train_steps is not None
+            else max_steps
+        )
 
         global_step = 0
         data_generator = cycle_dataloader(self.train_dataloader)
@@ -220,7 +225,12 @@ class SFTTrainer:
                     args={"global_step": global_step},
                 ),
             ):
-                self._save_hf(epoch=epoch, epoch_step=step, global_step=global_step)
+                self._save_hf(
+                    epoch=epoch,
+                    epoch_step=step,
+                    global_step=global_step,
+                    force=global_step == configured_max_steps - 1,
+                )
 
             with (
                 stats_tracker.record_timing("checkpoint_for_recover"),
@@ -364,7 +374,9 @@ class SFTTrainer:
         )
         return batch
 
-    def _save_hf(self, epoch: int, epoch_step: int, global_step: int):
+    def _save_hf(
+        self, epoch: int, epoch_step: int, global_step: int, force: bool = False
+    ):
         self.saver.save(
             self.actor,
             epoch,
@@ -372,6 +384,7 @@ class SFTTrainer:
             global_step,
             tokenizer=self.tokenizer,
             processor=self.processor,
+            force=force,
         )
 
         if not self.saver.is_async:

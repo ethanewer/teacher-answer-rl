@@ -135,8 +135,9 @@ class Saver:
         tokenizer: PreTrainedTokenizerFast | None = None,
         processor: AutoProcessor | None = None,
         base_model_path: str | None = None,
+        force: bool = False,
     ):
-        if not self.freq_ctl.check(
+        if not force and not self.freq_ctl.check(
             epochs=int(step == self.ft_spec.steps_per_epoch - 1), steps=1
         ):
             return

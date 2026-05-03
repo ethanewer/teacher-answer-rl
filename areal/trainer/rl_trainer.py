@@ -525,6 +525,11 @@ class PPOTrainer:
             raise ValueError(f"Total epochs must be positive: {total_epochs}")
         steps_per_epoch = len(self.train_dataloader)
         max_steps = total_epochs * steps_per_epoch
+        configured_max_steps = (
+            min(max_steps, config.total_train_steps)
+            if config.total_train_steps is not None
+            else max_steps
+        )
 
         # Initialize proxy workers if not using RolloutWorkflow
         if workflow is None:
@@ -751,7 +756,12 @@ class PPOTrainer:
                     args={"global_step": global_step},
                 ),
             ):
-                self._save_hf(epoch=epoch, epoch_step=step, global_step=global_step)
+                self._save_hf(
+                    epoch=epoch,
+                    epoch_step=step,
+                    global_step=global_step,
+                    force=global_step == configured_max_steps - 1,
+                )
 
             with (
                 stats_tracker.record_timing("checkpoint_for_recover"),
@@ -1069,7 +1079,9 @@ class PPOTrainer:
 
         return path
 
-    def _save_hf(self, epoch: int, epoch_step: int, global_step: int):
+    def _save_hf(
+        self, epoch: int, epoch_step: int, global_step: int, force: bool = False
+    ):
         # Save as HF models for evaluation
         self.saver.save(
             self.actor,
@@ -1078,6 +1090,7 @@ class PPOTrainer:
             global_step,
             tokenizer=self.tokenizer,
             processor=self.processor,
+            force=force,
         )
         if self.critic is not None:
             self.saver.save(
@@ -1088,6 +1101,7 @@ class PPOTrainer:
                 tokenizer=self.tokenizer,
                 processor=self.processor,
                 name="critic",
+                force=force,
             )
         # Async mode: synchronization handled by AsyncCheckpointManager
         if not self.saver.is_async:
