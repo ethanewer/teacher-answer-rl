@@ -6,6 +6,7 @@ import sys
 import uuid
 from collections.abc import Callable
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any
 
 from torchdata.stateful_dataloader import StatefulDataLoader
@@ -35,6 +36,28 @@ from areal.utils import logging, perf_tracer, stats_tracker
 from areal.utils.network import format_host_for_url
 
 logger = logging.getLogger("vLLMEngine")
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _sanitize_external_pythonpath(existing: str | None, venv_dir: str) -> str:
+    """Keep repo paths, but drop site-packages from a different venv."""
+    if not existing:
+        return str(_REPO_ROOT)
+    clean_paths: list[str] = []
+    venv_path = Path(venv_dir).resolve()
+    for raw_path in existing.split(os.pathsep):
+        if not raw_path:
+            continue
+        path = Path(raw_path).resolve()
+        parts = set(path.parts)
+        is_site_packages = "site-packages" in parts or "dist-packages" in parts
+        if is_site_packages and not path.is_relative_to(venv_path):
+            continue
+        clean_paths.append(str(path))
+    if str(_REPO_ROOT) not in clean_paths:
+        clean_paths.insert(0, str(_REPO_ROOT))
+    return os.pathsep.join(clean_paths)
 
 
 class VLLMBackend:
@@ -271,6 +294,9 @@ class VLLMBackend:
             _venv_dir = os.path.dirname(_python_dir)
             if os.path.exists(os.path.join(_venv_dir, "pyvenv.cfg")):
                 _env["VIRTUAL_ENV"] = _venv_dir
+                _env["PYTHONPATH"] = _sanitize_external_pythonpath(
+                    _env.get("PYTHONPATH"), _venv_dir
+                )
 
         logger.info(f"Launching vLLM server with command: {' '.join(cmd)}")
         return subprocess.Popen(

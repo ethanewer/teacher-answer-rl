@@ -137,7 +137,9 @@ sglang:
   model_path: ${actor.path}
   python_executable: ${oc.env:AREAL_SGLANG_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-sglang/bin/python}
   random_seed: ${seed}
-  skip_tokenizer_init: true
+  # String stop sequences are required to stop the student prefix at
+  # the top-level "commands" field, so SGLang must initialize its tokenizer.
+  skip_tokenizer_init: false
   dtype: ${actor.dtype}
   max_running_requests: 256
   context_length: 32768
