@@ -248,7 +248,8 @@ SGLang status:
 The released `nvidia/Nemotron-Terminal-8B` model was evaluated through the
 Terminus-2 agent on a 10-task, 5-trial subset before launching the local
 full-scale SFT. This is a sanity check that the local Terminal-Bench/serving
-path can reproduce a score above the 10% target.
+path works on an easier subset; it is not directly comparable to the paper's
+10%/13% Terminal-Bench scores, which are full 89-task scores.
 
 Result file:
 
@@ -260,7 +261,9 @@ Summary:
 
 - Trials: 50.
 - Passes: 22.
-- Pass rate: 44%.
+- Easy-subset pass rate: 44%.
+- Conservative full-suite lower bound: 22 / (89 tasks * 5 trials) = 4.94%,
+  assuming every unrun task fails.
 
 Task pass rates:
 
@@ -365,6 +368,14 @@ The original requested set also included `prove-plus-comm` and `pypi-server`;
 these can be used if Docker capacity is sufficient, but the faster 10-task set
 above is the current efficient evaluation set.
 
+Every subset Terminal-Bench result must report both:
+
+- The pass rate on the selected subset.
+- The conservative full-suite lower bound:
+  `subset_passes / (89 * trials_per_task)`, treating all unrun Terminal-Bench
+  tasks as failures. This is the only subset-derived number that can be compared
+  against the paper's full-suite 10%/13% figures without overstating coverage.
+
 ## Final Reporting Checklist
 
 Fill these after the long runs finish:
@@ -374,5 +385,6 @@ Fill these after the long runs finish:
 - Final teacher checkpoint path, optimizer step, examples seen, elapsed
   wall-clock.
 - Offline eval table for the three comparison points.
-- Terminal-Bench 10-task x 5-trial table for each reported checkpoint.
+- Terminal-Bench 10-task x 5-trial table for each reported checkpoint,
+  including selected-subset score and conservative full-suite lower bound.
 - Limitations and next steps.

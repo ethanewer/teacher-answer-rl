@@ -25,8 +25,9 @@ Relevant setup points from the paper tables and recipe:
 - Local SFT max context: 32,768 tokens.
 
 The released paper SFT checkpoint `nvidia/Nemotron-Terminal-8B` was evaluated
-first to verify that the local serving and Terminal-Bench path can reproduce a
-score above 10%.
+first to verify that the local serving and Terminal-Bench path works. The paper
+reports Terminal-Bench scores on the full 89-task suite, so the easier subset
+check below must not be reported as a full-suite reproduction.
 
 ## Released SFT Terminal-Bench Check
 
@@ -50,7 +51,9 @@ Terminal-Bench result:
 - Trials per task: 5.
 - Total trials: 50.
 - Passes: 22.
-- Pass rate: 44%.
+- Easy-subset pass rate: 44%.
+- Conservative full-suite lower bound: 22 / (89 tasks * 5 trials) = 4.94%,
+  assuming every unrun task fails.
 
 Result file:
 
@@ -134,5 +137,6 @@ After SFT and teacher-answer-RL complete, update this file with:
 - Teacher checkpoint closest to SFT wall-clock.
 - Final teacher checkpoint and wall-clock time.
 - Offline eval metrics for the three comparison points.
-- Terminal-Bench 10-task x 5-trial results for each reported checkpoint.
+- Terminal-Bench 10-task x 5-trial results for each reported checkpoint,
+  reporting both selected-subset score and conservative full-suite lower bound.
 - Limitations and next steps.
