@@ -1,95 +1,100 @@
 # Terminal-Agent Full Recipes: Qwen3-8B SFT and Teacher-Answer-RL
 
-This document is the reproduction recipe for the Qwen3-8B terminal-agent runs in
-this repo. It records the exact data construction, chat-template handling,
-training commands, GPU layout, optimization settings, checkpointing, and eval
-commands used for the SFT baseline and the teacher-answer-RL continuation.
+This is the canonical runbook for the full-scale terminal-agent comparison.
+Older Qwen3-4B and 1k-row notes in this repo are historical and are not the
+current publication recipe.
 
-## Common Setup
+## Current Scope
+
+- Base model: `Qwen/Qwen3-8B`.
+- Released SFT reference model for sanity checking:
+  `nvidia/Nemotron-Terminal-8B`.
+- Dataset: `nvidia/Nemotron-Terminal-Corpus`.
+- Training dataset config: `full_mix`, which expands locally to
+  `dataset_adapters`, `skill_based_easy`, `skill_based_medium`, and
+  `skill_based_mixed`.
+- Full released mix size observed at launch: 366,154 trajectories.
+- Algorithms: SFT first, then teacher-answer-RL initialized from the completed
+  SFT checkpoint.
+- Algorithms not used in the current comparison: GRPO.
+- Training context length: 32,768 tokens.
+- Offline generation/eval context target: 40,960 tokens where supported.
+
+Paper alignment notes from arXiv:2602.21193:
+
+- Tables 5-8 show best SFT results with no data filtering and 264k total
+  examples in the paper setup.
+- The released corpus available here is larger than that count; the local
+  paper-style run uses the complete released `full_mix` rather than regenerating
+  or filtering data.
+- The SFT recipe keeps the paper-style 32k training context and global batch
+  size 128.
+
+## Environment
 
 Run from:
 
 ```bash
 cd /wbl-fast/usrs/ee/teacher-answer-rl/AReaL
-```
-
-Primary artifact root:
-
-```bash
 export FILEROOT=/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b
 ```
 
 Primary environments:
 
-- Training env: `.venv-megatron`
-- vLLM rollout/env serving env: `.venv-rollout-vllm`
-- Optional SGLang env: `.venv-rollout-sglang`
+- Training: `.venv-megatron`
+- vLLM rollout/serving: `.venv-rollout-vllm`
+- Optional SGLang rollout: `.venv-rollout-sglang`
 - HF cache: `/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache`
-- GPUs: 8x H200 on one node
+- Triton cache: `/wbl-fast/usrs/ee/teacher-answer-rl/triton`
 
-The launch scripts set the important runtime variables:
+Important runtime settings are encoded in the launch scripts and configs:
 
 ```bash
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export GLOO_SOCKET_IFNAME=enp71s0
+export HF_HOME=/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+export HF_HUB_ENABLE_HF_TRANSFER=1
+export TRANSFORMERS_NO_TF=1
+export USE_TF=0
+export USE_FLAX=0
 export NCCL_SOCKET_IFNAME=enp71s0
+export GLOO_SOCKET_IFNAME=enp71s0
 export NCCL_CUMEM_ENABLE=0
 export NCCL_NVLS_ENABLE=0
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export HF_HOME=/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
-export HF_HUB_ENABLE_HF_TRANSFER=1
-export HF_HUB_OFFLINE=1
-export HF_DATASETS_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-export TRITON_CACHE_DIR=/wbl-fast/usrs/ee/teacher-answer-rl/triton
-export TRANSFORMERS_NO_TF=1
-export USE_TF=0
-export USE_FLAX=0
-```
-
-Use the wrapper script unless debugging the trainer directly:
-
-```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh <command>
 ```
 
 ## Data and Chat Formatting
 
-Dataset:
+The data loader has two different SFT/RL formats because Qwen3 removes thinking
+from prior assistant turns when using its normal multi-turn chat template.
 
-- Hugging Face dataset: `nvidia/Nemotron-Terminal-Corpus`
-- Split: `train`
-- Small-run config/subset: `skill_based_medium`
-- Full paper-style config: `full_mix`
-- Local subset used for completed comparison: first 1000 released rows
-- Validation holdout for offline eval: 512 turns from the loader partition
+SFT full-scale format:
 
-Qwen3 chat-template handling is critical. Qwen3 removes previous-turn thinking
-from multi-turn conversations, so each assistant response is made into its own
-training row.
+- `sft_format: trajectory`
+- One training row is one released terminal trajectory.
+- The serializer writes Qwen ChatML tokens directly so all released assistant
+  responses, including `<think>...</think>`, remain in the supervised target.
+- The loss mask covers assistant content and assistant end-of-message tokens.
+- User/system/tool tokens are context only.
+- `truncate_long: true` keeps every trajectory row while capping at the 32k
+  paper context.
 
-For every row:
+Teacher-answer-RL format:
 
-- The prompt is the conversation prefix up to the current assistant turn.
-- Prior assistant messages have `<think>...</think>` stripped before applying
-  the chat template.
-- The current assistant target keeps its `<think>...</think>` content for SFT.
-- `tokenizer.apply_chat_template(..., enable_thinking=True)` is used.
-- Rows longer than the configured max length are filtered rather than truncated.
-- Training uses one assistant response target per row.
+- One training row is one trainable assistant response.
+- Prior assistant turns are context with previous `<think>...</think>` stripped.
+- The student starts at a fresh assistant generation prompt produced by the
+  Qwen3 tokenizer/chat template.
+- The student samples until a top-level `"commands"` key is reached, or until
+  the generation limit.
+- All sampled student-prefix tokens up to `"commands"` are in the PPO loss mask.
+- The scalar reward assigned to those sampled tokens is computed only from the
+  teacher answer span: `"commands"` through `"task_complete"` plus the closing
+  JSON brace.
+- Reasoning text is generated and trained, but it is never string-compared or
+  directly rewarded.
 
-For teacher-answer-RL:
-
-- Each current assistant response is split at the top-level `"commands"` field.
-- Student prefix is everything before `"commands"`.
-- Teacher answer is `"commands"` through `"task_complete"` plus the closing JSON
-  brace.
-- Reward is computed only on teacher answer tokens.
-- Reasoning text is used only as prefill/context and is never directly rewarded
-  or compared.
-
-The required Terminus-2 response shape is:
+Terminus-2 target shape:
 
 ```text
 <think>
@@ -109,413 +114,265 @@ The required Terminus-2 response shape is:
 }
 ```
 
-Run the chat-template check before launching a new recipe:
+Run the tokenizer/template check before changing recipes:
 
 ```bash
 rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh chat-check
 ```
 
-Expected output path:
+## SFT Baseline
+
+Config:
 
 ```text
-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/results/qwen3_8b_chat_template_check.json
+rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200_slurm4.yaml
 ```
 
-## SFT Recipe
+Launch command:
 
-Primary config:
-
-```text
-rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200.yaml
+```bash
+FILEROOT=/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b \
+bash rlvr_demo/scripts/run_terminal_sft_h200.sh \
+  rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200_slurm4.yaml
 ```
 
-Paper-style full-mix command:
+Equivalent wrapper command:
 
 ```bash
 rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh sft-full
 ```
 
-Single-node `skill_based_medium` comparison command actually used for the local
-completed SFT run:
-
-```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh sft-skill-final
-```
-
-Equivalent explicit command:
-
-```bash
-bash rlvr_demo/scripts/run_terminal_sft_h200.sh \
-  rlvr_demo/configs/qwen3_8b_terminal_sft_paper_h200.yaml \
-  experiment_name=qwen3-8b-terminal-sft-skill-medium-1k-b128-24step-h200 \
-  train_dataset.dataset_kwargs.name=skill_based_medium \
-  +train_dataset.dataset_kwargs.limit_rows=1000 \
-  train_dataset.batch_size=128 \
-  total_train_epochs=2 \
-  total_train_steps=24 \
-  saver.freq_steps=4
-```
-
-SFT model and tokenizer:
-
-- `actor.path: Qwen/Qwen3-8B`
-- `tokenizer_path: ${actor.path}`
-- `enable_thinking: true` in dataset kwargs
-- `strip_prior_assistant_thinking: true`
-
-SFT data settings:
-
-- `train_dataset.path: nvidia/Nemotron-Terminal-Corpus`
-- `train_dataset.split: train`
-- `train_dataset.type: sft`
-- Full recipe dataset config: `full_mix`, `split_part=train`
-- Local completed recipe override: `skill_based_medium`, `limit_rows=1000`
-- `shuffle_records: false`
-- `shuffle_source_groups: true`
-- `holdout_size: 512`
-- `lazy_tokenize: true`
-
-SFT sequence and packing settings:
-
-- `train_dataset.max_length: 32768`
-- `actor.mb_spec.max_tokens_per_mb: 32768`
-- `actor.mb_spec.packing_algorithm: ffd`
-- `actor.pad_to_maximum: true`
-- `actor.enable_tree_training: true`
-- Rows over max length are filtered by the dataset loader.
-
-SFT GPU and precision settings:
-
-- Single node, 8 H200 GPUs
-- Actor backend: `megatron:d1p1t8`
-- Tensor parallelism: 8-way
-- `dtype: bfloat16`
-- `gradient_checkpointing: true`
-- `disable_dropout: true`
-- `enable_offload: false`
-
-SFT optimizer:
-
-- Adam
-- Learning rate: `2e-5`
-- Weight decay: `1e-4`
-- Betas: `(0.9, 0.95)`
-- Epsilon: `1e-8`
-- Scheduler: cosine
-- Warmup proportion: `0.10`
-- Gradient clipping: `1.0`
-
-SFT checkpointing and logs:
-
-- Full paper-style save cadence: `saver.freq_steps=500`
-- Local completed run save cadence: `saver.freq_steps=4`
-- Checkpoints:
-  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/checkpoints/ewer/<experiment>/trial0`
-- Logs:
-  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/logs/ewer/<experiment>/trial0`
-- Checkpoint wall-clock log:
-  `checkpoint_events.jsonl` in the trial checkpoint directory
-
-Completed local SFT run:
+Run identity:
 
 - Experiment:
-  `qwen3-8b-terminal-sft-skill-medium-1k-b128-24step-h200`
-- Prepared data: 1000 usable rows, 5966 assistant turns
-- Batch size: 128
-- Steps: 24
-- Examples/tasks seen: 3072
-- Final checkpoint elapsed: `2068.8735690116882` seconds
-- Final metric elapsed: `1938.5065271960339` seconds
-- Final loss: `0.4692123234272003`
-- Final checkpoint:
-  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/checkpoints/ewer/qwen3-8b-terminal-sft-skill-medium-1k-b128-24step-h200/trial0/default/epoch1epochstep1globalstep23`
+  `qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4`
+- Slurm job for the clean current run: `7399`.
+- Start timestamp: 2026-05-03 00:38 UTC.
+- Worker nodes: 4 H200 nodes, 32 GPUs total.
+- Backend: `megatron:d16p1t2`.
+- Global batch size: 128 trajectories.
+- Steps per epoch: 2,860.
+- Total steps: 5,720.
+- Total trajectory examples seen: 732,160.
+- Sequence packing: FFD, `max_tokens_per_mb=32768`.
+- `pad_to_maximum: true`.
+- `enable_tree_training: true`.
+- Precision: bf16.
+- Optimizer: AdamW-compatible Adam, LR `2e-5`, betas `(0.9, 0.95)`,
+  weight decay `1e-4`, cosine schedule, 10% warmup, grad clip `1.0`.
 
-SFT smoke test:
+Checkpointing:
 
-```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh sft-smoke
-```
+- Periodic checkpoints every 500 optimizer steps.
+- A final checkpoint is forced on the last configured training step even when it
+  is not a multiple of 500.
+- Checkpoint events:
+  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/checkpoints/ewer/qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4/trial0/checkpoint_events.jsonl`
+- Metrics:
+  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/logs/ewer/qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4/trial0/metrics.jsonl`
 
-## Teacher-Answer-RL Recipe
+An earlier pre-patch SFT attempt was cancelled before any checkpoint because
+the original saver cadence would not have produced a true final checkpoint. Its
+logs were preserved with an `aborted_pre_finalsave_20260503T001650Z` suffix.
 
-Primary optimized config:
+## Teacher-Answer-RL
+
+Config:
 
 ```text
-rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml
+rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_paper_h200.yaml
 ```
 
-Optimized full command:
+Launch after SFT completes:
 
 ```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh teacher-from-nemotron-full
+SFT_EXPERIMENT=qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4 \
+TEACHER_EXPERIMENT=qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-5720step-h200 \
+FILEROOT=/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b \
+DATASET_CONFIG=full_mix \
+rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh teacher-full
 ```
 
-Equivalent explicit command:
+The wrapper resolves `TERMINAL_TEACHER_INIT_PATH` to the final SFT checkpoint.
+Set it manually only when resuming from a specific checkpoint:
 
 ```bash
-bash rlvr_demo/scripts/run_terminal_teacher_answer_rl_h200.sh \
-  rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml
+export TERMINAL_TEACHER_INIT_PATH=/path/to/sft/checkpoint
 ```
 
-Optimized smoke test:
-
-```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh teacher-from-nemotron-smoke
-```
-
-Equivalent smoke overrides:
-
-```bash
-bash rlvr_demo/scripts/run_terminal_teacher_answer_rl_h200.sh \
-  rlvr_demo/configs/qwen3_8b_terminal_teacher_answer_rl_from_nemotron_h200.yaml \
-  experiment_name=qwen3-8b-terminal-teacher-answer-rl-from-nemotron-smoke \
-  total_train_epochs=1 \
-  total_train_steps=2 \
-  +train_dataset.dataset_kwargs.limit_rows=64 \
-  +train_dataset.dataset_kwargs.limit=32 \
-  train_dataset.batch_size=8 \
-  rollout.consumer_batch_size=8 \
-  saver.freq_steps=1 \
-  vllm.max_num_seqs=32 \
-  rollout.max_concurrent_rollouts=32 \
-  rollout.queue_size=256
-```
-
-Teacher-answer-RL model and tokenizer:
-
-- `actor.path: nvidia/Nemotron-Terminal-8B`
-- `tokenizer_path: ${actor.path}`
-- This initializes from the released SFT checkpoint rather than Qwen3 base.
-- This was the optimized recipe after the base-initialized teacher run
-  underperformed on offline metrics.
-
-Teacher-answer-RL data settings:
-
-- `train_dataset.path: nvidia/Nemotron-Terminal-Corpus`
-- `train_dataset.split: train`
-- `train_dataset.type: rl`
-- `dataset_kwargs.name: skill_based_medium`
-- `dataset_kwargs.limit_rows: 1000`
-- `dataset_kwargs.holdout_size: 512`
-- `dataset_kwargs.strip_prior_assistant_thinking: true`
-- `dataset_kwargs.enable_thinking: true`
-- `dataset_kwargs.lazy_tokenize: true`
-- `shuffle_records: false`
-- `shuffle_source_groups: true`
-
-Teacher-answer split/reward settings:
-
-- Student prefix: response text before the top-level `"commands"` field.
-- Teacher answer: top-level `"commands"` field, `"task_complete"` field, and
-  closing JSON brace.
-- Rewarded/computed tokens: teacher answer only.
-- Reasoning tokens are not compared or rewarded.
-- Format bonus: `TEACHER_ANSWER_FORMAT_BONUS=0.0`
-- Length penalty: `TEACHER_ANSWER_LENGTH_PENALTY=0.0`
-- `teacher_format_found` is logged as a metric to detect split failures.
-
-Teacher-answer-RL sequence and packing settings:
-
-- `train_dataset.max_length: 32768`
-- `gconfig.max_tokens: 32768`
-- `actor.mb_spec.max_tokens_per_mb: 32768`
-- `actor.mb_spec.packing_algorithm: ffd`
-- `actor.pad_to_maximum: true`
-- `actor.enable_tree_training: true`
-- Rows over max length are filtered by the dataset loader.
-
-Teacher-answer-RL rollout/generation settings:
-
-- Rollout backend: `vllm:d4p1t1`
-- vLLM model: `${actor.path}`
-- vLLM replicas: 4 data-parallel rollout workers
-- `gconfig.n_samples: 2`
-- `gconfig.max_new_tokens: 512`
-- `gconfig.temperature: 0.6`
-- `gconfig.top_p: 0.95`
-- `gconfig.top_k: 20`
-- `gconfig.greedy: false`
-- `rollout.max_concurrent_rollouts: 256`
-- `rollout.queue_size: 2048`
-- `vllm.max_num_seqs: 128`
-- `vllm.max_model_len: 32768`
-- `vllm.gpu_memory_utilization: 0.80`
-- vLLM prefix caching enabled by leaving `no_enable_prefix_caching: false`
-
-Teacher-answer-RL actor/GPU settings:
-
-- Single node, 8 H200 GPUs
-- Actor backend: `megatron:d1p1t4`
-- Actor GPUs: 4 H200s
-- Rollout GPUs: 4 H200s
-- `dtype: bfloat16`
-- `gradient_checkpointing: true`
-- `disable_dropout: true`
-- `enable_offload: false`
-
-Teacher-answer-RL optimizer/PPO-style settings:
-
-- Adam
-- Learning rate: `1e-6`
-- Weight decay: `0.01`
-- Betas: `(0.9, 0.999)`
-- Epsilon: `1e-8`
-- Scheduler: constant
-- Warmup proportion: `0.001`
-- Gradient clipping: `1.0`
-- `eps_clip: 0.2`
-- `kl_ctl: 0.0`
-- `ppo_n_minibatches: 1`
-- `recompute_logprob: true`
-- `use_decoupled_loss: true`
-- Rejection sampling: ratio upper bound `5.0`
-- Reward normalization: group mean/std, group size `n_samples`
-- Advantage normalization: batch mean/std
-- Weight update mode: `xccl`
-
-Teacher-answer-RL checkpointing and logs:
-
-- Save every 8 optimizer steps.
-- Checkpoints:
-  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/checkpoints/ewer/qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200/trial0`
-- Logs:
-  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/logs/ewer/qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200/trial0`
-- Checkpoint wall-clock log:
-  `/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/checkpoints/ewer/qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200/trial0/checkpoint_events.jsonl`
-
-Completed optimized teacher-answer-RL run:
+Run identity:
 
 - Experiment:
-  `qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200`
-- Prepared data: 1000 usable rows, 5333 trainable teacher-answer turns
-- Train batch size: 32
-- Rollout samples: 2
-- Steps: 40
-- Final examples/tasks seen: 1280 prompts
-- Total logged training time: `2035.15` seconds
-- Final checkpoint event elapsed: `2362.9116473197937` seconds
-- Final checkpoint reward avg: `-0.8450348377227783`
-- Best wall-clock-matched checkpoint: step 31, elapsed
-  `1956.5410830974579` seconds
-- Best offline command-similarity checkpoint: final step 39
+  `qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-5720step-h200`
+- Initialization: final local SFT checkpoint, not the released SFT model.
+- Backend: Megatron actor plus vLLM rollout by default.
+- Actor backend: `megatron:d2p1t2`.
+- Rollout backend: `vllm:d4p1t1`.
+- Actor GPUs: 4 H200s.
+- Rollout GPUs: 4 H200s.
+- Global prompt batch size: 128.
+- Samples per prompt: 2.
+- Total optimizer steps: 5,720.
+- Prompt tasks seen: 732,160.
+- Sequence packing: FFD, `max_tokens_per_mb=32768`.
+- Generation: sampled, temperature `0.6`, top-p `0.95`, top-k `20`,
+  `max_new_tokens=2048`.
+- Optimizer: Adam, LR `1e-6`, betas `(0.9, 0.999)`, weight decay `0.01`,
+  constant schedule, grad clip `1.0`.
+- PPO settings: `eps_clip=0.25`, `ppo_n_minibatches=1`,
+  `recompute_logprob=true`, `use_decoupled_loss=true`, ratio rejection upper
+  bound `5.0`, group reward normalization with group size 2.
 
-Optimized teacher checkpoints:
+Checkpointing:
 
-| global step | optimizer step | elapsed sec | reward avg | checkpoint |
-| ---: | ---: | ---: | ---: | --- |
-| 7 | 8 | 784.6861 | -0.8217 | `epoch0epochstep7globalstep7` |
-| 15 | 16 | 1171.3023 | -0.6462 | `epoch0epochstep15globalstep15` |
-| 23 | 24 | 1562.3459 | -0.6605 | `epoch0epochstep23globalstep23` |
-| 31 | 32 | 1956.5411 | -0.4826 | `epoch0epochstep31globalstep31` |
-| 39 | 40 | 2362.9116 | -0.8450 | `epoch0epochstep39globalstep39` |
+- Periodic checkpoints every 500 optimizer steps.
+- A final checkpoint is forced on step 5,720.
+- The final teacher checkpoint has the same number of prompt tasks seen as the
+  full SFT trajectory examples seen.
+- The comparison table will also select the teacher checkpoint closest to the
+  completed SFT wall-clock time.
 
-Earlier base-initialized teacher-answer-RL comparison recipe:
+SGLang status:
 
-```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh teacher-skill-final
-```
+- SGLang was tested with `.venv-rollout-sglang`.
+- A PYTHONPATH isolation bug was fixed so rollout backends do not inherit
+  incompatible site-packages from `.venv-megatron`.
+- `sglang.skip_tokenizer_init` is false because string stop sequences are needed
+  to stop the student at `"commands"`.
+- A 64-row, 2-step SGLang teacher-answer-RL smoke completed successfully.
+- Production teacher-answer-RL defaults to vLLM because it has been stable and
+  has lower operational risk for the long run.
 
-That recipe used `Qwen/Qwen3-8B`, batch 64, 48 steps, `max_new_tokens=2048`,
-and 2 rollout samples on the same `skill_based_medium` 1000-row subset. It is
-kept for comparison, but the optimized recipe above is the one to use going
-forward.
+## Released SFT Terminal-Bench Sanity Check
 
-## Offline Eval Recipe
+The released `nvidia/Nemotron-Terminal-8B` model was evaluated through the
+Terminus-2 agent on a 10-task, 5-trial subset before launching the local
+full-scale SFT. This is a sanity check that the local Terminal-Bench/serving
+path can reproduce a score above the 10% target.
 
-Evaluate the released SFT model and all optimized teacher checkpoints:
-
-```bash
-rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh eval-teacher-from-nemotron
-```
-
-Eval settings:
-
-- Dataset: `nvidia/Nemotron-Terminal-Corpus`
-- Config: `skill_based_medium`
-- Split part: validation holdout
-- `limit_rows=1000`
-- `limit=32`
-- `max_length=40960`
-- `max_new_tokens=2048`
-- Sampled generation: temperature `0.6`, top-p `0.95`, top-k `20`
-- Metrics: JSON parse validity, commands schema validity,
-  `task_complete` validity, normalized command sequence similarity, command
-  exact match, and `task_complete` prediction accuracy.
-
-Output directory:
+Result file:
 
 ```text
-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/results/eval_teacher_from_nemotron_40step
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/terminal_bench_eval/results/tb_nemotron8b_easy10_5_final.summary.json
 ```
 
-Compile SFT-vs-optimized-teacher checkpoint logs:
+Summary:
 
-```bash
-.venv/bin/python -m rlvr_demo.terminal_compile_results \
-  --fileroot /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b \
-  --experiment qwen3-8b-terminal-sft-skill-medium-1k-b128-24step-h200 \
-  --experiment qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200 \
-  --eval-dir /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/results/eval_teacher_from_nemotron_40step \
-  --output-dir /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/results/qwen3-8b-sft-vs-teacher-from-nemotron-40step
+- Trials: 50.
+- Passes: 22.
+- Pass rate: 44%.
+
+Task pass rates:
+
+| task | pass rate |
+| --- | ---: |
+| constraints-scheduling | 0.20 |
+| fix-git | 0.20 |
+| git-leak-recovery | 0.60 |
+| log-summary-date-ranges | 1.00 |
+| modernize-scientific-stack | 1.00 |
+| multi-source-data-merger | 0.80 |
+| nginx-request-logging | 0.60 |
+| regex-log | 0.00 |
+| sqlite-db-truncate | 0.00 |
+| vulnerable-secret | 0.00 |
+
+## Offline Evaluation
+
+Offline eval script:
+
+```text
+rlvr_demo/terminal_offline_eval.py
 ```
 
-Compiled outputs:
+Metrics:
 
-- `checkpoint_log.jsonl`
-- `checkpoint_log.csv`
-- `comparison_table.json`
+- JSON parse validity.
+- Commands schema validity.
+- `task_complete` validity.
+- `task_complete` prediction accuracy.
+- Normalized command sequence similarity.
+- Command exact match rate.
 
-## Terminal-Bench Eval Recipe
-
-Serve a checkpoint with vLLM using the Qwen3 reasoning parser and
-`enable_thinking=true`. Example for optimized teacher step 39:
+Run after both training runs:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-HF_HOME=/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache \
-.venv-rollout-vllm/bin/python -m vllm.entrypoints.openai.api_server \
-  --model /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/checkpoints/ewer/qwen3-8b-terminal-teacher-answer-rl-from-nemotron-h200/trial0/default/epoch0epochstep39globalstep39 \
-  --served-model-name terminal-teacher-step39 \
-  --host 0.0.0.0 \
-  --port 30080 \
-  --dtype bfloat16 \
-  --max-model-len 40960 \
-  --gpu-memory-utilization 0.88 \
-  --reasoning-parser qwen3 \
-  --default-chat-template-kwargs '{"enable_thinking": true}' \
-  --trust-remote-code
+rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh eval
+rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh compile
 ```
 
-Run Harbor/Terminal-Bench from a Docker-capable CPU Slurm node:
+The compiler emits:
+
+```text
+$FILEROOT/results/qwen3-8b-released-fullmix-nofilter-sft-vs-teacher-rl/checkpoint_log.jsonl
+$FILEROOT/results/qwen3-8b-released-fullmix-nofilter-sft-vs-teacher-rl/checkpoint_log.csv
+$FILEROOT/results/qwen3-8b-released-fullmix-nofilter-sft-vs-teacher-rl/comparison_table.json
+```
+
+The checkpoint log includes:
+
+- `algorithm`
+- `base_model`
+- `dataset`
+- `dataset_split`
+- `dataset_config`
+- `examples_seen`
+- `tasks_seen`
+- `optimizer_step`
+- `epoch`
+- `fractional_epoch`
+- `elapsed_wall_clock_sec`
+- `timestamp_saved`
+- loss/reward metrics
+- offline eval metrics when available
+
+## Terminal-Bench Evaluation After Training
+
+Serve a checkpoint with:
 
 ```bash
-rlvr_demo/scripts/run_terminal_bench_eval_harbor.sh \
-  tb-teacher-step39-modernize \
-  openai/terminal-teacher-step39 \
+bash rlvr_demo/scripts/serve_terminal_model_vllm.sh \
+  /path/to/checkpoint \
+  terminal-local-checkpoint \
+  30080
+```
+
+Submit CPU-node Harbor/Terminal-Bench with:
+
+```bash
+bash rlvr_demo/scripts/run_terminal_bench_eval_slurm_cpu.sh \
+  tb-local-checkpoint-easy10-5 \
+  openai/terminal-local-checkpoint \
   http://10.0.159.57:30080/v1 \
-  /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/terminal_bench_eval/harbor_jobs/tb-teacher-step39-modernize \
-  --task modernize-scientific-stack \
-  --n-attempts 1 \
-  --n-concurrent 1 \
-  --max-turns 40 \
-  --max-input-tokens 40960 \
-  --max-output-tokens 8192 \
-  --override-cpus 4 \
-  --override-memory-mb 16384
+  $FILEROOT/terminal_bench_eval/harbor_jobs/tb-local-checkpoint-easy10-5
 ```
 
-Summarize Harbor outputs:
+Post-training eval must use at least 10 tasks and 5 trials per task for each
+reported checkpoint. The currently selected 10-task set is:
 
-```bash
-.venv/bin/python -m rlvr_demo.terminal_experiment summarize-harbor \
-  --jobs-dir /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/terminal_bench_eval/harbor_jobs/tb-teacher-step39-modernize \
-  --output /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/terminal_bench_eval/results/tb_teacher_step39_modernize_summary.json
-```
+- `modernize-scientific-stack`
+- `fix-git`
+- `git-leak-recovery`
+- `log-summary-date-ranges`
+- `multi-source-data-merger`
+- `nginx-request-logging`
+- `vulnerable-secret`
+- `constraints-scheduling`
+- `regex-log`
+- `sqlite-db-truncate`
 
-Completed one-task Terminal-Bench checks:
+The original requested set also included `prove-plus-comm` and `pypi-server`;
+these can be used if Docker capacity is sufficient, but the faster 10-task set
+above is the current efficient evaluation set.
 
-- Released SFT `nvidia/Nemotron-Terminal-8B`: `modernize-scientific-stack`,
-  `1/1`, reward `1.0`
-- Optimized teacher step 39: `modernize-scientific-stack`, `1/1`, reward `1.0`
+## Final Reporting Checklist
 
-These are skipped-hard-task smoke checks, not full Terminal-Bench scores.
+Fill these after the long runs finish:
+
+- Final SFT checkpoint path, optimizer step, examples seen, elapsed wall-clock.
+- Teacher checkpoint closest to full SFT wall-clock.
+- Final teacher checkpoint path, optimizer step, examples seen, elapsed
+  wall-clock.
+- Offline eval table for the three comparison points.
+- Terminal-Bench 10-task x 5-trial table for each reported checkpoint.
+- Limitations and next steps.

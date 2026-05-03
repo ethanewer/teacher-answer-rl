@@ -1,5 +1,10 @@
 # Terminal Agent SFT and Teacher-Answer-RL Reproduction
 
+Historical note: this file records the earlier Qwen3-4B subset experiment. The
+current publication-scale Qwen3-8B recipe is documented in
+`rlvr_demo/TERMINAL_AGENT_FULL_RECIPES.md` and
+`rlvr_demo/TERMINAL_AGENT_QWEN3_8B_PAPER_BASELINE.md`.
+
 This document records the final completed terminal-agent runs for
 `nvidia/Nemotron-Terminal-Corpus` on the `skill_based_medium` configuration with
 `Qwen/Qwen3-4B-Thinking-2507`.
