@@ -46,6 +46,7 @@ TERMINAL_BENCH_TASK_CHOICES = sorted(
         "sanitize-git-repo",
     }
 )
+TERMINAL_BENCH_FULL_SUITE_TASK_COUNT = 89
 
 SYNTHETIC_TASK_REPO = "nvidia/Nemotron-Terminal-Synthetic-Tasks"
 SYNTHETIC_MEDIUM_FILES = [
@@ -323,19 +324,44 @@ def _cmd_summarize_harbor(args: argparse.Namespace) -> None:
         if row["reward"] is None:
             continue
         by_task.setdefault(str(row["task"]), []).append(float(row["reward"]))
+    trials_by_task: dict[str, int] = {}
+    for row in rows:
+        trials_by_task[str(row["task"])] = trials_by_task.get(str(row["task"]), 0) + 1
+    pass_count = sum(sum(values) for values in by_task.values())
+    n_rewarded_trials = sum(len(values) for values in by_task.values())
+    inferred_trials_per_task = max(trials_by_task.values(), default=0)
+    trials_per_task = args.trials_per_task or inferred_trials_per_task
+    full_suite_denominator = args.full_suite_task_count * trials_per_task
     summary = {
         "n_trials": len(rows),
-        "n_rewarded_trials": sum(len(values) for values in by_task.values()),
+        "n_rewarded_trials": n_rewarded_trials,
+        "n_selected_tasks": len(trials_by_task),
+        "selected_tasks": sorted(trials_by_task),
+        "pass_count": pass_count,
         "overall_pass_rate": (
-            sum(sum(values) for values in by_task.values())
-            / max(sum(len(values) for values in by_task.values()), 1)
+            pass_count
+            / max(n_rewarded_trials, 1)
+        ),
+        "selected_subset_pass_rate": (
+            pass_count / max(len(rows), 1)
+        ),
+        "selected_subset_pass_rate_including_unrewarded": (
+            pass_count / max(len(rows), 1)
+        ),
+        "full_suite_task_count": args.full_suite_task_count,
+        "trials_per_task_for_full_suite_lower_bound": trials_per_task,
+        "full_suite_lower_bound_denominator": full_suite_denominator,
+        "full_suite_lower_bound_pass_rate": (
+            pass_count / max(full_suite_denominator, 1)
         ),
         "by_task": {
             task: {
-                "n": len(values),
+                "n": trials_by_task.get(task, len(values)),
+                "n_rewarded": len(values),
                 "pass_rate": sum(values) / max(len(values), 1),
             }
-            for task, values in sorted(by_task.items())
+            for task in sorted(trials_by_task)
+            for values in [by_task.get(task, [])]
         },
     }
     summary_path = args.output.with_suffix(".summary.json")
@@ -450,6 +476,17 @@ def main() -> None:
     summarize = sub.add_parser("summarize-harbor")
     summarize.add_argument("--jobs-dir", type=Path, required=True)
     summarize.add_argument("--output", type=Path, required=True)
+    summarize.add_argument(
+        "--full-suite-task-count",
+        type=int,
+        default=TERMINAL_BENCH_FULL_SUITE_TASK_COUNT,
+        help="Terminal-Bench full-suite task count for subset lower-bound reporting.",
+    )
+    summarize.add_argument(
+        "--trials-per-task",
+        type=int,
+        help="Trials per full-suite task; inferred from results when omitted.",
+    )
     summarize.set_defaults(func=_cmd_summarize_harbor)
 
     preflight = sub.add_parser("preflight")

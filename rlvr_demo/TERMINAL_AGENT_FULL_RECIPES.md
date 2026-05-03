@@ -376,6 +376,10 @@ Every subset Terminal-Bench result must report both:
   tasks as failures. This is the only subset-derived number that can be compared
   against the paper's full-suite 10%/13% figures without overstating coverage.
 
+`rlvr_demo.terminal_experiment summarize-harbor` writes these fields
+automatically as `selected_subset_pass_rate` and
+`full_suite_lower_bound_pass_rate`.
+
 ## Final Reporting Checklist
 
 Fill these after the long runs finish:
