@@ -200,6 +200,16 @@ Set it manually only when resuming from a specific checkpoint:
 export TERMINAL_TEACHER_INIT_PATH=/path/to/sft/checkpoint
 ```
 
+For unattended handoff after the SFT job finishes:
+
+```bash
+FILEROOT=/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b \
+SFT_EXPERIMENT=qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4 \
+TEACHER_EXPERIMENT=qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-5720step-h200 \
+TARGET_SFT_STEP=5720 \
+rlvr_demo/scripts/watch_sft_then_launch_teacher.sh
+```
+
 Run identity:
 
 - Experiment:
