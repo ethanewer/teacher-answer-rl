@@ -207,8 +207,13 @@ FILEROOT=/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b 
 SFT_EXPERIMENT=qwen3-8b-terminal-sft-released-fullmix-trajectory-nofilter-b128-2epoch-h200-slurm4 \
 TEACHER_EXPERIMENT=qwen3-8b-terminal-teacher-answer-rl-released-fullmix-nofilter-b128-s2-5720step-h200 \
 TARGET_SFT_STEP=5720 \
-rlvr_demo/scripts/watch_sft_then_launch_teacher.sh
+rlvr_demo/scripts/watch_sft_then_launch_teacher.sh \
+  total_train_steps=5720
 ```
+
+The script passes `TEACHER_EXPERIMENT` into the Hydra config as
+`experiment_name` and forwards any trailing Hydra overrides to the teacher
+launch.
 
 Run identity:
 

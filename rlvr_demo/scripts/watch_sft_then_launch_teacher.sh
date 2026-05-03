@@ -54,7 +54,9 @@ while true; do
     export DATASET_CONFIG="${DATASET_CONFIG:-full_mix}"
     export TERMINAL_TEACHER_INIT_PATH="$checkpoint_path"
     echo "Launching teacher-answer-RL from final SFT checkpoint: $TERMINAL_TEACHER_INIT_PATH" >&2
-    exec bash rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh teacher-full
+    exec bash rlvr_demo/scripts/reproduce_terminal_qwen3_8b_paper_baseline.sh teacher-full \
+      experiment_name="$TEACHER_EXPERIMENT" \
+      "$@"
   fi
   echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') waiting for SFT checkpoint step >= $TARGET_SFT_STEP at $EVENTS_PATH" >&2
   sleep "$CHECK_INTERVAL_SEC"
