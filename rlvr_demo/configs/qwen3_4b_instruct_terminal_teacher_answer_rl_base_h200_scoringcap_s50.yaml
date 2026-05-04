@@ -1,0 +1,9 @@
+defaults:
+  - qwen3_4b_instruct_terminal_teacher_answer_rl_base_h200
+  - _self_
+
+experiment_name: qwen3-4b-instruct-terminal-teacher-answer-rl-base-medium-b128-s2-500step-scoringcap-s50-h200
+
+saver:
+  freq_steps: 50
+
