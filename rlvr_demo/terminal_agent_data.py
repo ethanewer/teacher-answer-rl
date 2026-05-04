@@ -7,6 +7,7 @@ import json
 import random
 import re
 from collections.abc import Iterable, Iterator, Sequence
+from pathlib import Path
 from typing import Any
 
 from datasets import Dataset, load_dataset
@@ -62,6 +63,36 @@ def stable_hash(value: str) -> str:
 def strip_thinking_block(content: str) -> str:
     """Remove explicit Qwen/Terminus thinking from a previous assistant turn."""
     return _THINK_RE.sub("", content, count=1).lstrip()
+
+
+def strip_thinking_blocks(content: str) -> str:
+    """Remove all explicit Qwen/Terminus thinking blocks from assistant content."""
+    return _THINK_RE.sub("", content).lstrip()
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def is_valid_stripped_terminus_assistant(content: str) -> bool:
+    """Return whether a stripped assistant response is a usable Terminus target."""
+    obj = _first_json_object(strip_thinking_blocks(content).strip())
+    if obj is None:
+        return False
+    if not isinstance(obj.get("analysis"), str) or not obj["analysis"].strip():
+        return False
+    if not isinstance(obj.get("plan"), str) or not obj["plan"].strip():
+        return False
+    if not isinstance(obj.get("commands"), list):
+        return False
+    return isinstance(obj.get("task_complete"), bool)
 
 
 def _coerce_messages(conversations: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
@@ -377,6 +408,7 @@ def _partition_refs(
     seed: int,
     shuffle_records: bool,
     shuffle_source_groups: bool = False,
+    source_group_lanes: int = 1,
 ) -> list[dict[str, Any]]:
     if split_part is None:
         selected = list(refs)
@@ -404,7 +436,45 @@ def _partition_refs(
             grouped[source_id].append(ref)
         random.Random(seed).shuffle(group_order)
         selected = [ref for source_id in group_order for ref in grouped[source_id]]
+    if source_group_lanes > 1 and not shuffle_records:
+        selected = _interleave_source_groups(selected, source_group_lanes)
     return selected
+
+
+def _interleave_source_groups(
+    records: list[dict[str, Any]],
+    lanes: int,
+) -> list[dict[str, Any]]:
+    """Interleave source groups so DistributedSampler stride keeps groups local.
+
+    PyTorch's DistributedSampler with shuffle=False gives rank ``r`` indices
+    ``r, r + world_size, ...``.  Interleaving grouped records across ``lanes``
+    lets each data-parallel rank still see contiguous turns from the same
+    trajectory, which is important for tree-attention prefix sharing.
+    """
+    if lanes <= 1 or not records:
+        return records
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
+    for record in records:
+        source_id = str(record["source_id"])
+        if source_id not in grouped:
+            grouped[source_id] = []
+            group_order.append(source_id)
+        grouped[source_id].append(record)
+
+    lane_records: list[list[dict[str, Any]]] = [[] for _ in range(lanes)]
+    for idx, source_id in enumerate(group_order):
+        lane_records[idx % lanes].extend(grouped[source_id])
+
+    interleaved: list[dict[str, Any]] = []
+    max_lane_len = max(len(lane) for lane in lane_records)
+    for pos in range(max_lane_len):
+        for lane in lane_records:
+            if pos < len(lane):
+                interleaved.append(lane[pos])
+    return interleaved
 
 
 def _prepare_terminal_rows_and_refs(
@@ -612,6 +682,22 @@ def _prepare_terminal_rows_only(
     return rows
 
 
+def _load_retention_manifest(path: str | Path) -> dict[str, set[int]]:
+    retained: dict[str, set[int]] = {}
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            if item.get("type") == "metadata":
+                continue
+            source_id = str(item["source_id"])
+            retained[source_id] = {
+                int(idx) for idx in item.get("retained_assistant_indices", [])
+            }
+    return retained
+
+
 def _partition_rows(
     rows: list[dict[str, Any]],
     split_part: str | None,
@@ -646,6 +732,7 @@ def _tokenize_sft_trajectory(
     tokenizer,
     max_length: int | None,
     truncate_long: bool,
+    strip_assistant_thinking: bool = False,
 ) -> dict[str, list[int]] | None:
     """Tokenize a complete Terminus trajectory with all assistant spans supervised.
 
@@ -657,19 +744,32 @@ def _tokenize_sft_trajectory(
     """
     input_ids: list[int] = []
     loss_mask: list[int] = []
-    for msg in row["messages"]:
+    trainable_assistant_indices = row.get("trainable_assistant_indices")
+    trainable_assistant_indices = (
+        {int(idx) for idx in trainable_assistant_indices}
+        if trainable_assistant_indices is not None
+        else None
+    )
+    for msg_idx, msg in enumerate(row["messages"]):
         role = msg["role"]
         content = str(msg["content"])
         if role not in {"system", "user", "assistant", "tool"}:
             continue
+        if role == "assistant" and strip_assistant_thinking:
+            content = strip_thinking_blocks(content)
 
         if role == "assistant":
+            train_content = (
+                True
+                if trainable_assistant_indices is None
+                else msg_idx in trainable_assistant_indices
+            )
             header_ids = _encode_text(tokenizer, "<|im_start|>assistant\n")
             body_ids = _encode_text(tokenizer, content.strip() + "<|im_end|>\n")
             input_ids.extend(header_ids)
             loss_mask.extend([0] * len(header_ids))
             input_ids.extend(body_ids)
-            loss_mask.extend([1] * len(body_ids))
+            loss_mask.extend([1 if train_content else 0] * len(body_ids))
         elif role == "tool":
             # Match Qwen's no-tools fallback for tool messages closely enough for
             # the terminal corpus. Current released rows are user/assistant only.
@@ -701,11 +801,13 @@ class TerminalSFTTrajectoryLazyDataset(TorchDataset):
         tokenizer,
         max_length: int | None,
         truncate_long: bool,
+        strip_assistant_thinking: bool = False,
     ) -> None:
         self.rows = rows
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.truncate_long = truncate_long
+        self.strip_assistant_thinking = strip_assistant_thinking
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -718,10 +820,116 @@ class TerminalSFTTrajectoryLazyDataset(TorchDataset):
                 tokenizer=self.tokenizer,
                 max_length=self.max_length,
                 truncate_long=self.truncate_long,
+                strip_assistant_thinking=self.strip_assistant_thinking,
             )
             if tokenized is not None:
                 return tokenized
         raise IndexError("No tokenizable terminal SFT trajectories found")
+
+
+def _append_chatml_message(
+    input_ids: list[int],
+    loss_mask: list[int],
+    tokenizer,
+    role: str,
+    content: str,
+    train_content: bool,
+) -> None:
+    if role == "assistant":
+        header_ids = _encode_text(tokenizer, "<|im_start|>assistant\n")
+        body_ids = _encode_text(tokenizer, content.strip() + "<|im_end|>\n")
+        input_ids.extend(header_ids)
+        loss_mask.extend([0] * len(header_ids))
+        input_ids.extend(body_ids)
+        loss_mask.extend([1 if train_content else 0] * len(body_ids))
+    elif role == "tool":
+        text = (
+            f"<|im_start|>user\n<tool_response>\n{content}\n"
+            "</tool_response><|im_end|>\n"
+        )
+        ids = _encode_text(tokenizer, text)
+        input_ids.extend(ids)
+        loss_mask.extend([0] * len(ids))
+    else:
+        ids = _encode_text(tokenizer, f"<|im_start|>{role}\n{content}<|im_end|>\n")
+        input_ids.extend(ids)
+        loss_mask.extend([0] * len(ids))
+
+
+def _tokenize_sft_tree_turn(
+    row: dict[str, Any],
+    assistant_idx: int,
+    tokenizer,
+    max_length: int | None,
+    truncate_long: bool,
+) -> dict[str, list[int]] | None:
+    """Tokenize one Qwen3-exact assistant leaf for tree-attention SFT.
+
+    Prior assistant turns are serialized without thinking and receive no loss.
+    The current assistant turn is serialized with the released thinking content
+    and is the only supervised span.  When multiple turns from the same
+    trajectory are tree-packed together, future turns continue through the
+    stripped assistant branch while the thinking branch remains a trained leaf.
+    """
+    input_ids: list[int] = []
+    loss_mask: list[int] = []
+    for idx, msg in enumerate(row["messages"][: assistant_idx + 1]):
+        role = msg["role"]
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+        content = str(msg["content"])
+        train_content = role == "assistant" and idx == assistant_idx
+        if role == "assistant" and idx != assistant_idx:
+            content = strip_thinking_block(content)
+        _append_chatml_message(
+            input_ids,
+            loss_mask,
+            tokenizer,
+            role,
+            content,
+            train_content=train_content,
+        )
+
+    if not any(loss_mask):
+        return None
+    if max_length is not None and len(input_ids) > max_length:
+        if not truncate_long:
+            return None
+        input_ids = input_ids[:max_length]
+        loss_mask = loss_mask[:max_length]
+        if not any(loss_mask):
+            return None
+    return {"input_ids": input_ids, "loss_mask": loss_mask}
+
+
+class TerminalSFTTreeTurnLazyDataset(_TerminalTurnDataset):
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        refs: list[dict[str, Any]],
+        tokenizer,
+        max_length: int | None,
+        truncate_long: bool,
+    ) -> None:
+        super().__init__(rows, refs, strip_prior_assistant_thinking=True)
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.truncate_long = truncate_long
+
+    def __getitem__(self, idx: int) -> dict[str, list[int]]:
+        for offset in range(len(self.refs)):
+            ref = self.refs[(idx + offset) % len(self.refs)]
+            row = self.rows[int(ref["row_idx"])]
+            tokenized = _tokenize_sft_tree_turn(
+                row,
+                assistant_idx=int(ref["assistant_idx"]),
+                tokenizer=self.tokenizer,
+                max_length=self.max_length,
+                truncate_long=self.truncate_long,
+            )
+            if tokenized is not None:
+                return tokenized
+        raise IndexError("No tokenizable terminal tree-turn SFT records found")
 
 
 def _tokenize_sft_turn(
@@ -802,17 +1010,20 @@ def get_terminal_sft_dataset(
     shuffle_records: bool = True,
     shuffle_source_groups: bool = False,
     strip_prior_assistant_thinking: bool = True,
+    strip_assistant_thinking: bool = False,
     enable_thinking: bool = True,
     lazy_tokenize: bool = False,
     sft_format: str = "turn",
     truncate_long: bool = False,
+    source_group_lanes: int = 1,
+    retention_manifest_path: str | None = None,
     **_: Any,
 ) -> Dataset:
     """Load Terminal-Corpus turns and tokenize them for AReaL SFT."""
     if tokenizer is None:
         raise ValueError("tokenizer is required")
-    if sft_format not in {"turn", "trajectory"}:
-        raise ValueError("sft_format must be 'turn' or 'trajectory'")
+    if sft_format not in {"turn", "trajectory", "tree_turn"}:
+        raise ValueError("sft_format must be 'turn', 'trajectory', or 'tree_turn'")
     if sft_format == "trajectory":
         rows = _prepare_terminal_rows_only(
             path=path,
@@ -823,6 +1034,17 @@ def get_terminal_sft_dataset(
             shuffle_rows=shuffle_rows,
         )
         rows = _partition_rows(rows, split_part, holdout_size, seed, shuffle_records)
+        if retention_manifest_path is not None:
+            retained = _load_retention_manifest(retention_manifest_path)
+            manifest_rows: list[dict[str, Any]] = []
+            for row in rows:
+                retained_indices = retained.get(str(row["source_id"]))
+                if not retained_indices:
+                    continue
+                manifest_rows.append(
+                    {**row, "trainable_assistant_indices": sorted(retained_indices)}
+                )
+            rows = manifest_rows
         if limit is not None:
             if limit <= 0:
                 raise ValueError(f"limit must be positive when set, got {limit}")
@@ -831,6 +1053,39 @@ def get_terminal_sft_dataset(
             raise ValueError("No usable terminal SFT trajectories found")
         return TerminalSFTTrajectoryLazyDataset(
             rows=rows,
+            tokenizer=tokenizer,
+            max_length=max_length,
+            truncate_long=truncate_long,
+            strip_assistant_thinking=strip_assistant_thinking,
+        )
+
+    if sft_format == "tree_turn":
+        rows, refs = _prepare_terminal_rows_and_refs(
+            path=path,
+            name=name,
+            split=split,
+            seed=seed,
+            limit_rows=limit_rows,
+            shuffle_rows=shuffle_rows,
+        )
+        refs = _partition_refs(
+            refs,
+            split_part,
+            holdout_size,
+            seed,
+            shuffle_records,
+            shuffle_source_groups=shuffle_source_groups,
+            source_group_lanes=source_group_lanes,
+        )
+        if limit is not None:
+            if limit <= 0:
+                raise ValueError(f"limit must be positive when set, got {limit}")
+            refs = refs[:limit]
+        if not refs:
+            raise ValueError("No usable terminal tree-turn SFT records found")
+        return TerminalSFTTreeTurnLazyDataset(
+            rows=rows,
+            refs=refs,
             tokenizer=tokenizer,
             max_length=max_length,
             truncate_long=truncate_long,
@@ -852,6 +1107,7 @@ def get_terminal_sft_dataset(
             seed,
             shuffle_records,
             shuffle_source_groups=shuffle_source_groups,
+            source_group_lanes=source_group_lanes,
         )
         if limit is not None:
             if limit <= 0:

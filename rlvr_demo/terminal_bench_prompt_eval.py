@@ -27,16 +27,16 @@ from rlvr_demo.terminal_offline_eval import (
 
 
 TERMINAL_BENCH_TASKS = [
-    "modernize-scientific-stack",
     "fix-git",
     "git-leak-recovery",
     "log-summary-date-ranges",
     "multi-source-data-merger",
     "nginx-request-logging",
     "vulnerable-secret",
-    "prove-plus-comm",
     "constraints-scheduling",
-    "pypi-server",
+    "regex-log",
+    "sqlite-db-truncate",
+    "modernize-scientific-stack",
 ]
 
 
@@ -149,8 +149,8 @@ def main() -> None:
     )
     parser.add_argument("--task", action="append", choices=TERMINAL_BENCH_TASKS)
     parser.add_argument("--n-samples", type=int, default=5)
-    parser.add_argument("--temperature", type=float, default=0.6)
-    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--terminal-state", default="We need modify the files in /app. No commands have been run yet.")

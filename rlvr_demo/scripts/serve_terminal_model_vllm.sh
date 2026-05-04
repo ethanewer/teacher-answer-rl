@@ -35,17 +35,26 @@ export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
 LOG_DIR="${LOG_DIR:-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-8b/terminal_bench_eval/server_logs}"
 mkdir -p "$LOG_DIR"
 
+VLLM_ARGS=(
+  --model "$MODEL"
+  --served-model-name "$SERVED_MODEL_NAME"
+  --host "${HOST:-0.0.0.0}"
+  --port "$PORT"
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-8}"
+  --max-model-len "${MAX_MODEL_LEN:-40960}"
+  --dtype "${DTYPE:-bfloat16}"
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.88}"
+  --uvicorn-log-level "${UVICORN_LOG_LEVEL:-warning}"
+)
+
+if [[ "${ENABLE_REASONING:-0}" == "1" ]]; then
+  VLLM_ARGS+=(--enable-reasoning --reasoning-parser "${REASONING_PARSER:-qwen3}")
+elif [[ -n "${REASONING_PARSER:-}" ]]; then
+  VLLM_ARGS+=(--reasoning-parser "$REASONING_PARSER")
+fi
+
 cd "$REPO_ROOT"
 exec "$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server \
-  --model "$MODEL" \
-  --served-model-name "$SERVED_MODEL_NAME" \
-  --host "${HOST:-0.0.0.0}" \
-  --port "$PORT" \
-  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE:-8}" \
-  --max-model-len "${MAX_MODEL_LEN:-40960}" \
-  --dtype "${DTYPE:-bfloat16}" \
-  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.88}" \
-  --reasoning-parser "${REASONING_PARSER:-qwen3}" \
-  --uvicorn-log-level "${UVICORN_LOG_LEVEL:-warning}" \
+  "${VLLM_ARGS[@]}" \
   "$@" \
   2>&1 | tee "$LOG_DIR/${SERVED_MODEL_NAME}_vllm_$(date -u +%Y%m%dT%H%M%SZ).log"

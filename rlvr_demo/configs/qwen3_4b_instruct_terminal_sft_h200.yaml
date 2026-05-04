@@ -1,4 +1,4 @@
-experiment_name: qwen3-4b-terminal-sft-turnrow-packed32768-h200
+experiment_name: qwen3-4b-instruct-terminal-sft-medium-stripthink-retained-trajectory32768-h200
 trial_name: trial0
 
 seed: 7
@@ -10,10 +10,10 @@ tokenizer_path: ${actor.path}
 cluster:
   n_nodes: 1
   n_gpus_per_node: 8
-  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-instruct
   name_resolve:
     type: nfs
-    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b/name_resolve
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-instruct/name_resolve
 
 scheduler:
   type: local
@@ -22,7 +22,7 @@ actor:
   backend: "megatron:d8p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen3-4B-Thinking-2507
+  path: Qwen/Qwen3-4B-Instruct-2507
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -74,28 +74,6 @@ actor:
         TF_CPP_MIN_LOG_LEVEL: "3"
 
 train_dataset:
-  batch_size: 1024
-  shuffle: false
-  pin_memory: true
-  num_workers: 8
-  path: nvidia/Nemotron-Terminal-Corpus
-  split: train
-  type: sft
-  max_length: 32768
-  scheduling_spec: null
-  dataset_kwargs:
-    name: skill_based_medium
-    split_part: train
-    holdout_size: 512
-    shuffle_records: false
-    shuffle_source_groups: true
-    strip_prior_assistant_thinking: true
-    enable_thinking: true
-    lazy_tokenize: true
-    sft_format: turn
-    truncate_long: false
-
-valid_dataset:
   batch_size: 512
   shuffle: false
   pin_memory: true
@@ -107,21 +85,25 @@ valid_dataset:
   scheduling_spec: null
   dataset_kwargs:
     name: skill_based_medium
-    split_part: validation
-    holdout_size: 512
+    split_part: null
+    holdout_size: 0
     shuffle_records: false
     strip_prior_assistant_thinking: true
-    enable_thinking: true
+    strip_assistant_thinking: true
+    enable_thinking: false
     lazy_tokenize: true
-    sft_format: turn
-    truncate_long: false
+    sft_format: trajectory
+    truncate_long: true
+    retention_manifest_path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-instruct/data/skill_based_medium.stripthink_valid_terminus_json_v1.jsonl
+
+valid_dataset: null
 
 saver:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
   freq_epochs: null
-  freq_steps: 250
+  freq_steps: 25
   freq_secs: null
 
 recover:
@@ -137,9 +119,9 @@ evaluator:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
-  eval_before_train: true
+  eval_before_train: false
   freq_epochs: null
-  freq_steps: 250
+  freq_steps: null
   freq_secs: null
 
 stats_logger:
@@ -148,11 +130,3 @@ stats_logger:
   fileroot: ${cluster.fileroot}
   wandb:
     mode: disabled
-
-perf_tracer:
-  experiment_name: ${experiment_name}
-  trial_name: ${trial_name}
-  fileroot: ${cluster.fileroot}
-  enabled: false
-  session_tracer:
-    enabled: false
