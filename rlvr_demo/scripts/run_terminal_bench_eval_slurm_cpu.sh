@@ -31,7 +31,7 @@ DEFAULT_CONFIG_ARGS=(
   --n-attempts "${N_ATTEMPTS:-5}"
   --n-concurrent "${N_CONCURRENT:-3}"
   --max-turns "${MAX_TURNS:-40}"
-  --max-input-tokens "${MAX_INPUT_TOKENS:-40960}"
+  --max-input-tokens "${MAX_INPUT_TOKENS:-32768}"
   --max-output-tokens "${MAX_OUTPUT_TOKENS:-8192}"
   --override-cpus "${OVERRIDE_CPUS:-4}"
   --override-memory-mb "${OVERRIDE_MEMORY_MB:-16384}"
