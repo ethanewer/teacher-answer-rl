@@ -296,7 +296,10 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-def _build_scoring_batch(traj: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _build_scoring_batch(
+    traj: dict[str, torch.Tensor],
+    max_tokens: int | None = None,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     input_ids = _as_tensor(traj["input_ids"])
     attention_mask = _as_tensor(traj["attention_mask"]).bool()
     prefix_ids = _as_tensor(traj["teacher_answer_prefix_ids"])
@@ -307,11 +310,26 @@ def _build_scoring_batch(traj: dict[str, torch.Tensor]) -> dict[str, torch.Tenso
 
     scoring_ids: list[torch.Tensor] = []
     scoring_loss_masks: list[torch.Tensor] = []
+    scoring_lengths: list[torch.Tensor] = []
+    scoring_original_lengths: list[torch.Tensor] = []
+    scoring_dropped_tokens: list[torch.Tensor] = []
+    scoring_truncated: list[torch.Tensor] = []
     for idx in range(input_ids.shape[0]):
         base_limit = int(attention_mask[idx].sum().item())
         base = input_ids[idx, :base_limit][context_mask[idx, :base_limit]]
         prefix = prefix_ids[idx][prefix_mask[idx]]
         answer = answer_ids[idx][answer_mask[idx]]
+        original_len = base.numel() + prefix.numel() + answer.numel()
+        dropped_tokens = 0
+        if max_tokens is not None and max_tokens > 0 and original_len > max_tokens:
+            answer_budget = max(max_tokens - prefix.numel(), 0)
+            if answer.numel() > answer_budget:
+                dropped_tokens += answer.numel() - answer_budget
+                answer = answer[:answer_budget]
+            base_budget = max(max_tokens - prefix.numel() - answer.numel(), 0)
+            if base.numel() > base_budget:
+                dropped_tokens += base.numel() - base_budget
+                base = base[-base_budget:] if base_budget > 0 else base[:0]
         seq = torch.cat([base, prefix, answer], dim=0)
         mask = torch.cat(
             [
@@ -322,6 +340,16 @@ def _build_scoring_batch(traj: dict[str, torch.Tensor]) -> dict[str, torch.Tenso
         )
         scoring_ids.append(seq)
         scoring_loss_masks.append(mask)
+        scoring_lengths.append(torch.tensor(seq.numel(), dtype=torch.float32, device=seq.device))
+        scoring_original_lengths.append(
+            torch.tensor(original_len, dtype=torch.float32, device=seq.device)
+        )
+        scoring_dropped_tokens.append(
+            torch.tensor(dropped_tokens, dtype=torch.float32, device=seq.device)
+        )
+        scoring_truncated.append(
+            torch.tensor(float(dropped_tokens > 0), dtype=torch.float32, device=seq.device)
+        )
 
     attention_rows = [
         torch.ones(row.numel(), dtype=torch.bool, device=row.device)
@@ -330,11 +358,31 @@ def _build_scoring_batch(traj: dict[str, torch.Tensor]) -> dict[str, torch.Tenso
     padded_ids = _pad_2d(scoring_ids, 0, torch.int32)
     padded_loss_mask = _pad_2d(scoring_loss_masks, 0, torch.int32)
     padded_attention_mask = _pad_2d(attention_rows, False, torch.bool)
-    return {
+    scoring_batch = {
         "input_ids": padded_ids,
         "loss_mask": padded_loss_mask,
         "attention_mask": padded_attention_mask,
     }
+    scoring_stats = {
+        "length": torch.stack(scoring_lengths).detach().cpu(),
+        "original_length": torch.stack(scoring_original_lengths).detach().cpu(),
+        "dropped_tokens": torch.stack(scoring_dropped_tokens).detach().cpu(),
+        "truncated": torch.stack(scoring_truncated).detach().cpu(),
+    }
+    return scoring_batch, scoring_stats
+
+
+def _scoring_max_tokens(trainer) -> int | None:
+    actor_cfg = getattr(getattr(trainer, "config", None), "actor", None)
+    mb_spec = getattr(actor_cfg, "mb_spec", None)
+    value = getattr(mb_spec, "max_tokens_per_mb", None)
+    if value is None:
+        value = getattr(getattr(trainer, "config", None), "gconfig", None)
+        value = getattr(value, "max_tokens", None)
+    if value is None:
+        return None
+    value = int(value)
+    return value if value > 0 else None
 
 
 def teacher_answer_reward_postprocess(
@@ -347,7 +395,12 @@ def teacher_answer_reward_postprocess(
     format_bonus = _env_float("TEACHER_ANSWER_FORMAT_BONUS", 0.0)
     length_penalty = _env_float("TEACHER_ANSWER_LENGTH_PENALTY", 0.0)
     max_new_tokens = max(float(getattr(trainer.config.gconfig, "max_new_tokens", 1) or 1), 1.0)
-    scoring_batches = [_build_scoring_batch(traj) for traj in rollout_batch]
+    scoring_outputs = [
+        _build_scoring_batch(traj, max_tokens=_scoring_max_tokens(trainer))
+        for traj in rollout_batch
+    ]
+    scoring_batches = [batch for batch, _ in scoring_outputs]
+    scoring_stats = [stats for _, stats in scoring_outputs]
     scoring_logps = trainer.actor.compute_logp(scoring_batches)
     if scoring_logps is None:
         raise RuntimeError("actor.compute_logp returned None for teacher-answer scoring")
@@ -359,7 +412,13 @@ def teacher_answer_reward_postprocess(
     all_prefix_lengths: list[torch.Tensor] = []
     all_format_found: list[torch.Tensor] = []
     all_optimized_lengths: list[torch.Tensor] = []
-    for traj, scoring_batch, logp in zip(rollout_batch, scoring_batches, scoring_logps):
+    all_scoring_lengths: list[torch.Tensor] = []
+    all_scoring_original_lengths: list[torch.Tensor] = []
+    all_scoring_dropped_tokens: list[torch.Tensor] = []
+    all_scoring_truncated: list[torch.Tensor] = []
+    for traj, scoring_batch, scoring_stat, logp in zip(
+        rollout_batch, scoring_batches, scoring_stats, scoring_logps
+    ):
         logp = _as_tensor(logp)
         answer_mask = torch.roll(
             scoring_batch["loss_mask"].to(logp.device).float(),
@@ -387,6 +446,14 @@ def teacher_answer_reward_postprocess(
         all_prefix_lengths.append(prefix_lengths.detach().float().cpu())
         all_format_found.append(format_found.detach().float().cpu())
         all_optimized_lengths.append(optimized_lengths.detach().float().cpu())
+        all_scoring_lengths.append(scoring_stat["length"].detach().float().cpu())
+        all_scoring_original_lengths.append(
+            scoring_stat["original_length"].detach().float().cpu()
+        )
+        all_scoring_dropped_tokens.append(
+            scoring_stat["dropped_tokens"].detach().float().cpu()
+        )
+        all_scoring_truncated.append(scoring_stat["truncated"].detach().float().cpu())
 
     rewards_cat = torch.cat(all_rewards)
     adjusted_rewards_cat = torch.cat(all_adjusted_rewards)
@@ -395,6 +462,10 @@ def teacher_answer_reward_postprocess(
     prefix_lengths_cat = torch.cat(all_prefix_lengths)
     format_found_cat = torch.cat(all_format_found)
     optimized_lengths_cat = torch.cat(all_optimized_lengths)
+    scoring_lengths_cat = torch.cat(all_scoring_lengths)
+    scoring_original_lengths_cat = torch.cat(all_scoring_original_lengths)
+    scoring_dropped_tokens_cat = torch.cat(all_scoring_dropped_tokens)
+    scoring_truncated_cat = torch.cat(all_scoring_truncated)
     stats_tracker.denominator(
         teacher_answer_n_seqs=torch.ones_like(rewards_cat, dtype=torch.bool)
     )
@@ -406,6 +477,10 @@ def teacher_answer_reward_postprocess(
         teacher_added_prefix_len=prefix_lengths_cat,
         teacher_format_found=format_found_cat,
         teacher_optimized_len=optimized_lengths_cat,
+        teacher_scoring_len=scoring_lengths_cat,
+        teacher_scoring_original_len=scoring_original_lengths_cat,
+        teacher_scoring_dropped_tokens=scoring_dropped_tokens_cat,
+        teacher_scoring_truncated=scoring_truncated_cat,
         denominator="teacher_answer_n_seqs",
     )
 
