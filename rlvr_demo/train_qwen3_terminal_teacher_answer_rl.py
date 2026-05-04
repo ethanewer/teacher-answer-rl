@@ -39,10 +39,13 @@ def main(args: list[str]) -> None:
     if config.valid_dataset is not None:
         valid_dataset = _load_dataset(config.valid_dataset, tokenizer, config.seed)
 
+    train_dataset_kwargs = dict(getattr(config.train_dataset, "dataset_kwargs", {}) or {})
+    enable_thinking = bool(train_dataset_kwargs.get("enable_thinking", True))
+
     workflow_kwargs = dict(
         gconfig=config.gconfig,
         tokenizer=config.tokenizer_path,
-        enable_thinking=True,
+        enable_thinking=enable_thinking,
     )
     eval_workflow_kwargs = workflow_kwargs.copy()
     eval_workflow_kwargs["gconfig"] = config.eval_gconfig
