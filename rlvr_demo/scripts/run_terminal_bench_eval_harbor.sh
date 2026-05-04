@@ -35,6 +35,18 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 2
 fi
 
+DOCKER_WAIT_SECONDS="${DOCKER_WAIT_SECONDS:-180}"
+docker_deadline=$((SECONDS + DOCKER_WAIT_SECONDS))
+until docker info >/dev/null 2>&1; do
+  if (( SECONDS >= docker_deadline )); then
+    echo "Docker daemon is not ready after ${DOCKER_WAIT_SECONDS}s." >&2
+    docker info >&2 || true
+    exit 2
+  fi
+  echo "Waiting for Docker daemon..." >&2
+  sleep 5
+done
+
 cd "$REPO_ROOT"
 "$REPO_ROOT/.venv/bin/python" -m rlvr_demo.terminal_experiment write-harbor-eval-config \
   --output "$CONFIG_PATH" \
