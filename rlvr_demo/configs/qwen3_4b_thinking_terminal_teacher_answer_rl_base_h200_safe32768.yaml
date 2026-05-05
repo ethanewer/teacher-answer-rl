@@ -1,0 +1,63 @@
+defaults:
+  - qwen3_4b_instruct_terminal_teacher_answer_rl_base_h200
+  - _self_
+
+experiment_name: qwen3-4b-thinking-terminal-teacher-answer-rl-base-medium-b64-s2-safe32768-o2048-h200
+
+cluster:
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-thinking
+  name_resolve:
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-thinking/name_resolve
+
+total_train_steps: 500
+
+gconfig:
+  n_samples: 2
+  max_new_tokens: 2048
+  max_tokens: 32768
+
+eval_gconfig:
+  n_samples: 1
+  max_new_tokens: 2048
+  max_tokens: 32768
+
+actor:
+  path: Qwen/Qwen3-4B-Thinking-2507
+  optimizer:
+    lr: 1e-6
+  max_new_tokens: ${gconfig.max_new_tokens}
+  mb_spec:
+    max_tokens_per_mb: 32768
+    packing_algorithm: ffd
+
+sglang:
+  model_path: ${actor.path}
+  context_length: 32768
+  max_prefill_tokens: 32768
+
+vllm:
+  model: ${actor.path}
+  max_model_len: 32768
+
+train_dataset:
+  batch_size: 64
+  max_length: 32768
+  dataset_kwargs:
+    name: skill_based_medium
+    split_part: null
+    holdout_size: 0
+    shuffle_records: false
+    shuffle_source_groups: true
+    strip_prior_assistant_thinking: true
+    enable_thinking: true
+    lazy_tokenize: true
+
+valid_dataset: null
+
+saver:
+  freq_steps: 50
+
+evaluator:
+  eval_before_train: false
+  freq_steps: null
+

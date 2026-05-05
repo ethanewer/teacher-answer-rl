@@ -77,8 +77,16 @@ def main() -> None:
         strip_prior_assistant_thinking=True,
     )[args.turn_offset]
 
-    prompt_injects_think_prefix = prompt_text.endswith("<|im_start|>assistant\n<think>\n")
-    prompt_starts_assistant_turn = prompt_text.endswith("<|im_start|>assistant\n")
+    think_prompt_suffix = "<|im_start|>assistant\n<think>\n"
+    assistant_prompt_suffix = "<|im_start|>assistant\n"
+    prompt_injects_think_prefix = prompt_text.endswith(think_prompt_suffix)
+    prompt_starts_assistant_turn = prompt_text.endswith(assistant_prompt_suffix)
+    if prompt_injects_think_prefix:
+        prompt_history_text = prompt_text[: -len(think_prompt_suffix)]
+    elif prompt_starts_assistant_turn:
+        prompt_history_text = prompt_text[: -len(assistant_prompt_suffix)]
+    else:
+        prompt_history_text = prompt_text
     target_starts_with_open_think = target_text.lstrip().startswith("<think>")
     report = {
         "model": args.model,
@@ -92,9 +100,10 @@ def main() -> None:
         ),
         "prompt_starts_assistant_turn": prompt_starts_assistant_turn,
         "prompt_injects_think_prefix": prompt_injects_think_prefix,
-        "prior_history_has_think_block": "<think>" in prompt_text[: -len("<|im_start|>assistant\n")]
-        if prompt_starts_assistant_turn
-        else "<think>" in prompt_text,
+        "assistant_generation_prompt_ok": prompt_starts_assistant_turn
+        or prompt_injects_think_prefix,
+        "prior_history_has_think_block": "<think>" in prompt_history_text
+        or "</think>" in prompt_history_text,
         "full_text_has_duplicate_think_prefix": "<think>\n<think>" in full_text,
         "sft_loss_prompt_tokens": prompt_len,
         "sft_loss_target_tokens": sum(tokenized["loss_mask"]),
@@ -116,7 +125,7 @@ def main() -> None:
     print(text)
 
     required_true = [
-        "prompt_starts_assistant_turn",
+        "assistant_generation_prompt_ok",
         "sft_target_contains_close_think",
         "sft_target_contains_commands",
         "current_thinking_is_trainable",

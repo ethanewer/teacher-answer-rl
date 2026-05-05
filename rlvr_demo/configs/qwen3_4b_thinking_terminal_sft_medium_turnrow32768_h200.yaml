@@ -1,0 +1,45 @@
+defaults:
+  - qwen3_4b_terminal_sft_h200_1000
+  - _self_
+
+experiment_name: qwen3-4b-thinking-terminal-sft-medium-turnrow32768-h200
+
+cluster:
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-thinking
+  name_resolve:
+    type: nfs
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-qwen3-4b-thinking/name_resolve
+
+actor:
+  path: Qwen/Qwen3-4B-Thinking-2507
+  backend: "megatron:d8p1t1"
+  mb_spec:
+    max_tokens_per_mb: 32768
+    packing_algorithm: ffd
+  enable_tree_training: false
+
+train_dataset:
+  batch_size: 1024
+  max_length: 32768
+  dataset_kwargs:
+    name: skill_based_medium
+    split_part: null
+    holdout_size: 0
+    shuffle_records: false
+    shuffle_source_groups: true
+    strip_prior_assistant_thinking: true
+    enable_thinking: true
+    lazy_tokenize: true
+    sft_format: turn
+    truncate_long: false
+
+valid_dataset: null
+
+saver:
+  freq_steps: 100
+
+evaluator:
+  eval_before_train: false
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
