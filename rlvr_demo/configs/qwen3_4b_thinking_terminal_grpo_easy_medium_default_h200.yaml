@@ -1,5 +1,5 @@
 experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-medium-h200
-trial_name: qwen3_4b_thinking_easymedium50_default_a1r7_b32x8_ctx24k_o8192_t20_obs2k_mb24k_r64_s40_12h_no_tp
+trial_name: qwen3_4b_thinking_easymedium50_default_a1r7_b32x8_ctx24k_o8192_t20_obs1k_mb24k_r64_s40_12h_no_tp
 
 seed: 7
 enable_offload: false
@@ -11,7 +11,7 @@ n_trajs: 8
 max_turns: 20
 max_workers: 64
 max_tokens_per_trajectory: 24576
-observation_max_chars: 2000
+observation_max_chars: 1000
 turn_discount: 0.9
 filter_uniform_reward: false
 encourage_completion_reward: false
