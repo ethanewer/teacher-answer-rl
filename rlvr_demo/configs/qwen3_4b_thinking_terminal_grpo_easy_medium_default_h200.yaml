@@ -1,5 +1,5 @@
-experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-medium-h200
-trial_name: qwen3_4b_thinking_easymedium50_default_a1r7_b32x8_ctx24k_o8192_t20_obs1k_mb24k_r64_s40_12h_no_tp
+experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-fastmedium-h200
+trial_name: qwen3_4b_thinking_easyfastmedium50_default_a1r7_b32x8_ctx24k_o8192_t20_obs1k_mb24k_r36_s40_12h_no_tp
 
 seed: 7
 enable_offload: false
@@ -9,7 +9,7 @@ tokenizer_path: ${actor.path}
 
 n_trajs: 8
 max_turns: 20
-max_workers: 64
+max_workers: 36
 max_tokens_per_trajectory: 24576
 observation_max_chars: 1000
 turn_discount: 0.9
@@ -46,7 +46,7 @@ rollout:
   backend: "vllm:d7p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 64
+  max_concurrent_rollouts: 36
   queue_size: 512
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 1
@@ -181,7 +181,7 @@ train_dataset:
   shuffle: false
   pin_memory: true
   num_workers: 4
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/easy_medium_50_50_b32_s40/manifest.csv
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/easy_medium_fast_50_50_b32_s40/manifest.csv
   split: train
   type: rl
   max_length: 24576
