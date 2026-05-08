@@ -1,5 +1,5 @@
-experiment_name: qwen3-4b-terminal-grpo-megatron-h200-1000
-trial_name: trial0
+experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-h200
+trial_name: qwen3_4b_thinking_easy_default_a2tp2r6_b32x8_ctx64k_o8192_t20
 
 seed: 7
 enable_offload: false
@@ -7,26 +7,26 @@ total_train_epochs: 3
 total_train_steps: 1000
 tokenizer_path: ${actor.path}
 
-n_trajs: 4
-max_turns: 25
-max_workers: 24
-max_tokens_per_trajectory: 32768
-observation_max_chars: 8000
+n_trajs: 8
+max_turns: 20
+max_workers: 32
+max_tokens_per_trajectory: 65536
+observation_max_chars: 4000
 turn_discount: 0.9
-filter_uniform_reward: true
+filter_uniform_reward: false
 encourage_completion_reward: false
 enable_thinking: false
-agent_harness: terminus
+agent_harness: default
 tool_call_parser: qwen3_xml
 reasoning_parser: qwen3
-chat_template_type: hf
-export_style: individual
+chat_template_type: concat
+export_style: concat
 terminal_task_service_url: ${oc.env:TERMINAL_TASK_SERVICE_URL,null}
 terminal_task_service_url_file: ${oc.env:TERMINAL_TASK_SERVICE_URL_FILE,null}
 task_timeouts:
   reset_env: 1800.0
   reset_agent: 120.0
-  agent_step: 300.0
+  agent_step: 600.0
   command: 180.0
   verifier: 1200.0
   cleanup: null
@@ -43,13 +43,13 @@ scheduler:
   type: local
 
 rollout:
-  backend: "vllm:d4p1t1"
+  backend: "vllm:d6p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 64
-  queue_size: 1024
+  max_concurrent_rollouts: 6
+  queue_size: 96
   consumer_batch_size: ${train_dataset.batch_size}
-  max_head_offpolicyness: 2
+  max_head_offpolicyness: 1
   enable_rollout_tracing: false
   scheduling_spec: ${actor.scheduling_spec}
   fileroot: ${cluster.fileroot}
@@ -60,23 +60,25 @@ rollout:
 gconfig:
   n_samples: 1
   min_new_tokens: 0
-  max_new_tokens: 1024
+  max_new_tokens: 8192
+  max_tokens: 65536
   greedy: false
-  temperature: 0.6
-  top_p: 0.95
-  top_k: 20
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 100000000
 
 eval_gconfig:
   n_samples: 1
   min_new_tokens: 0
-  max_new_tokens: 1024
+  max_new_tokens: 8192
+  max_tokens: 65536
   greedy: false
-  temperature: 0.6
-  top_p: 0.95
-  top_k: 20
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 100000000
 
 actor:
-  backend: "megatron:d4p1t1"
+  backend: "megatron:d1p1t2"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   path: Qwen/Qwen3-4B-Thinking-2507
@@ -85,7 +87,7 @@ actor:
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 32768
+    max_tokens_per_mb: 65536
     packing_algorithm: ffd
   optimizer:
     type: adam
@@ -153,13 +155,13 @@ sglang:
   skip_tokenizer_init: true
   dtype: ${actor.dtype}
   max_running_requests: 128
-  context_length: 32768
+  context_length: 65536
   mem_fraction_static: 0.70
   attention_backend: flashinfer
   log_level: warning
   log_level_http: warning
   chunked_prefill_size: -1
-  max_prefill_tokens: 32768
+  max_prefill_tokens: 65536
 
 vllm:
   model: ${actor.path}
@@ -167,48 +169,35 @@ vllm:
   seed: ${seed}
   skip_tokenizer_init: false
   dtype: ${actor.dtype}
-  max_num_seqs: 128
-  max_model_len: 32768
+  max_num_seqs: 16
+  max_model_len: 65536
   gpu_memory_utilization: 0.80
   no_enable_prefix_caching: true
   uvicorn_log_level: warning
 
 train_dataset:
-  batch_size: 8
+  batch_size: 32
   shuffle: true
   pin_memory: true
   num_workers: 4
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/medium/manifest.csv
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/easy/manifest.csv
   split: train
   type: rl
-  max_length: 1024
+  max_length: 65536
   scheduling_spec: null
   dataset_kwargs:
     split_part: train
-    holdout_size: 128
+    holdout_size: 0
     shuffle_records: true
 
-valid_dataset:
-  batch_size: 4
-  shuffle: false
-  pin_memory: true
-  num_workers: 4
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/medium/manifest.csv
-  split: train
-  type: rl
-  max_length: 1024
-  scheduling_spec: null
-  dataset_kwargs:
-    split_part: validation
-    holdout_size: 128
-    shuffle_records: false
+valid_dataset: null
 
 saver:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
   freq_epochs: null
-  freq_steps: 250
+  freq_steps: 50
   freq_secs: null
 
 recover:
@@ -224,9 +213,9 @@ evaluator:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
-  eval_before_train: true
+  eval_before_train: false
   freq_epochs: null
-  freq_steps: 250
+  freq_steps: null
   freq_secs: null
 
 stats_logger:

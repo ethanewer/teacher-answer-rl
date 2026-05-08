@@ -49,10 +49,26 @@ TERMINAL_BENCH_TASK_CHOICES = sorted(
 TERMINAL_BENCH_FULL_SUITE_TASK_COUNT = 89
 
 SYNTHETIC_TASK_REPO = "nvidia/Nemotron-Terminal-Synthetic-Tasks"
-SYNTHETIC_MEDIUM_FILES = [
-    "skill_based/medium_shard1.tar.gz",
-    "skill_based/medium_shard2.tar.gz",
-]
+SYNTHETIC_TASK_FILES_BY_SUBSET = {
+    "easy": ["skill_based/easy.tar.gz"],
+    "medium": [
+        "skill_based/medium_shard1.tar.gz",
+        "skill_based/medium_shard2.tar.gz",
+    ],
+    "mixed": [
+        "skill_based/mixed/data_processing.tar.gz",
+        "skill_based/mixed/data_science.tar.gz",
+        "skill_based/mixed/debugging.tar.gz",
+        "skill_based/mixed/file_operations.tar.gz",
+        "skill_based/mixed/scientific_computing.tar.gz",
+        "skill_based/mixed/security.tar.gz",
+    ],
+}
+SYNTHETIC_TASK_FILES_BY_SUBSET["all"] = (
+    SYNTHETIC_TASK_FILES_BY_SUBSET["easy"]
+    + SYNTHETIC_TASK_FILES_BY_SUBSET["medium"]
+    + SYNTHETIC_TASK_FILES_BY_SUBSET["mixed"]
+)
 
 
 def _cmd_smoke_data(args: argparse.Namespace) -> None:
@@ -149,37 +165,97 @@ def _write_default_task_toml(task_dir: Path) -> bool:
     return True
 
 
-def _discover_task_dirs(root: Path) -> list[Path]:
+def _is_terminal_task_dir(path: Path) -> bool:
+    return (
+        (path / "instruction.md").is_file()
+        and (path / "environment").is_dir()
+        and (path / "tests").is_dir()
+    )
+
+
+def _discover_task_dirs(root: Path, max_depth: int = 4) -> list[Path]:
+    """Find Nemotron task dirs without walking every file in each task.
+
+    The HF release is a directory archive, not a `datasets` table. Its task dirs
+    live a few levels below the extraction root, and each task can contain many
+    files under `environment/`. A broad `rglob("instruction.md")` is needlessly
+    expensive on shared filesystems, so this prunes once a task directory is
+    found and never descends into task payload directories.
+    """
+    root = root.resolve()
     tasks: list[Path] = []
-    for instruction in root.rglob("instruction.md"):
-        task_dir = instruction.parent
-        if (task_dir / "environment").exists() and (task_dir / "tests").exists():
-            tasks.append(task_dir)
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    skip_names = {".git", "__pycache__", "environment", "solution", "tests"}
+
+    while stack:
+        path, depth = stack.pop()
+        if _is_terminal_task_dir(path):
+            tasks.append(path)
+            continue
+        if depth >= max_depth or not path.is_dir():
+            continue
+        try:
+            children = sorted(
+                child
+                for child in path.iterdir()
+                if child.is_dir() and child.name not in skip_names
+            )
+        except OSError:
+            continue
+        stack.extend((child, depth + 1) for child in reversed(children))
+
     return sorted(set(tasks))
+
+
+def _synthetic_task_files(args: argparse.Namespace) -> list[str]:
+    if args.file:
+        return args.file
+    filenames: list[str] = []
+    for subset in args.subset:
+        filenames.extend(SYNTHETIC_TASK_FILES_BY_SUBSET[subset])
+    return list(dict.fromkeys(filenames))
 
 
 def _cmd_prepare_synthetic_tasks(args: argparse.Namespace) -> None:
     from huggingface_hub import hf_hub_download
 
+    args.subset = args.subset or ["medium"]
     output_dir = args.output_dir.resolve()
     download_dir = args.download_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     download_dir.mkdir(parents=True, exist_ok=True)
 
-    for filename in SYNTHETIC_MEDIUM_FILES:
-        tar_path = Path(
-            hf_hub_download(
-                repo_id=SYNTHETIC_TASK_REPO,
-                repo_type="dataset",
-                filename=filename,
-                local_dir=download_dir,
-            )
-        )
-        print(f"Extracting {tar_path} -> {output_dir}")
-        with tarfile.open(tar_path) as archive:
-            archive.extractall(output_dir)
+    filenames = _synthetic_task_files(args)
+    extracted_files: list[str] = []
+    if not args.manifest_only:
+        for filename in filenames:
+            if args.skip_download:
+                tar_path = download_dir / filename
+                if not tar_path.exists():
+                    raise FileNotFoundError(
+                        f"{tar_path} does not exist; rerun without --skip-download"
+                    )
+            else:
+                tar_path = Path(
+                    hf_hub_download(
+                        repo_id=SYNTHETIC_TASK_REPO,
+                        repo_type="dataset",
+                        filename=filename,
+                        local_dir=download_dir,
+                    )
+                )
+            if not args.skip_extract:
+                print(f"Extracting {tar_path} -> {output_dir}")
+                with tarfile.open(tar_path) as archive:
+                    try:
+                        archive.extractall(output_dir, filter="data")
+                    except TypeError:
+                        archive.extractall(output_dir)
+            extracted_files.append(filename)
 
     task_dirs = _discover_task_dirs(output_dir)
+    if args.limit is not None:
+        task_dirs = task_dirs[: args.limit]
     created = sum(_write_default_task_toml(path) for path in task_dirs)
 
     manifest_path = output_dir / "manifest.csv"
@@ -187,12 +263,17 @@ def _cmd_prepare_synthetic_tasks(args: argparse.Namespace) -> None:
         writer = csv.DictWriter(handle, fieldnames=["task_name", "path"])
         writer.writeheader()
         for path in task_dirs:
-            writer.writerow({"task_name": path.name, "path": str(path)})
+            task_name = path.relative_to(output_dir).as_posix().replace("/", "__")
+            writer.writerow({"task_name": task_name, "path": str(path)})
 
     print(
         json.dumps(
             {
                 "output_dir": str(output_dir),
+                "repo": SYNTHETIC_TASK_REPO,
+                "subsets": args.subset,
+                "files": filenames,
+                "files_processed": extracted_files,
                 "tasks": len(task_dirs),
                 "task_toml_created": created,
                 "manifest": str(manifest_path),
@@ -390,6 +471,9 @@ def _cmd_preflight(args: argparse.Namespace) -> None:
     checks["singularity"] = shutil.which("singularity") or shutil.which("apptainer")
     checks["enroot"] = shutil.which("enroot")
     checks["uv"] = shutil.which("uv")
+    docker_info_code, docker_info = _run_text(["docker", "info"])
+    checks["docker_info_exit_code"] = docker_info_code
+    checks["docker_info"] = docker_info.splitlines()[:20] if docker_info else []
 
     code, nvidia = _run_text(
         [
@@ -409,11 +493,17 @@ def _cmd_preflight(args: argparse.Namespace) -> None:
     checks["glibc_exit_code"] = code
     checks["glibc"] = glibc
 
-    checks["can_run_terminal_envs"] = bool(checks["docker"])
+    checks["can_run_terminal_envs"] = (
+        checks["docker"] is not None and docker_info_code == 0
+    )
     checks["notes"] = []
-    if not checks["can_run_terminal_envs"]:
+    if checks["docker"] is None:
         checks["notes"].append(
             "The current Terminus GRPO and Harbor eval paths use Terminal-Bench's DockerComposeManager and require Docker. Singularity/Apptainer is detected for visibility but is not wired into this workflow."
+        )
+    elif docker_info_code != 0:
+        checks["notes"].append(
+            "Docker is installed but the daemon/API is not reachable. Run on a node with Docker socket access or set DOCKER_HOST to a reachable Docker daemon."
         )
     if len(checks["gpus"]) != 8:
         checks["notes"].append(
@@ -439,6 +529,38 @@ def main() -> None:
         "--download-dir",
         type=Path,
         default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache/nemotron_tasks"),
+    )
+    prepare.add_argument(
+        "--subset",
+        action="append",
+        choices=sorted(SYNTHETIC_TASK_FILES_BY_SUBSET),
+        default=None,
+        help="Synthetic task subset to download/extract. Repeatable. Defaults to medium.",
+    )
+    prepare.add_argument(
+        "--file",
+        action="append",
+        help="Explicit dataset archive path inside the HF repo. Overrides --subset.",
+    )
+    prepare.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Use archives already present under --download-dir.",
+    )
+    prepare.add_argument(
+        "--skip-extract",
+        action="store_true",
+        help="Do not extract archives; only rebuild task.toml files and manifest.",
+    )
+    prepare.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="Only scan --output-dir and rebuild the manifest.",
+    )
+    prepare.add_argument(
+        "--limit",
+        type=int,
+        help="Limit manifest rows after discovery; useful for smoke tests.",
     )
     prepare.set_defaults(func=_cmd_prepare_synthetic_tasks)
 

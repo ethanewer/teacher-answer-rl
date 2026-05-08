@@ -711,10 +711,16 @@ class AsyncCompletionsWithReward(BaseAsyncCompletions):
             frequency_penalty = 0.0
 
         # Create generation config
+        max_tokens_for_request = (
+            max_total_tokens_final
+            if max_total_tokens_final is not None
+            else len(prompt_token_ids) + max_new_tokens
+        )
         gconfig = GenerationHyperparameters(
             n_samples=n,
             temperature=temp,
             max_new_tokens=max_new_tokens,
+            max_tokens=max_tokens_for_request,
             top_p=top_p_val,
             stop=stop_tokens,
             greedy=temp == 0,
@@ -1057,6 +1063,11 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
         if max_new_tokens is None:
             max_new_tokens = 512  # Default value
             logger.warning("max_output_tokens not specified, defaulting to 512.")
+        max_tokens_for_request = (
+            self.engine_max_tokens
+            if self.engine_max_tokens is not None
+            else len(prompt_token_ids) + max_new_tokens
+        )
 
         stop = kwargs.get("stop", None)
         if stop is not None and self.chat_template_type == "concat":
@@ -1072,6 +1083,7 @@ class AsyncResponsesWithReward(BaseAsyncResponses):
             n_samples=1,
             temperature=temp,
             max_new_tokens=max_new_tokens,
+            max_tokens=max_tokens_for_request,
             top_p=top_p_val,
             stop=stop,
             greedy=temp == 0,

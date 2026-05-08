@@ -287,6 +287,7 @@ class LocalScheduler(Scheduler):
         port: int,
         timeout: float = 60,
     ) -> bool:
+        timeout = float(os.environ.get("AREAL_FORK_READINESS_TIMEOUT", timeout))
         url = f"http://{format_hostport(host, port)}/health"
         deadline = time.time() + timeout
         while time.time() < deadline:

@@ -1662,10 +1662,15 @@ class FSDPEngine(TrainEngine):
             ]
             mb["use_cache"] = False
             padded_mb["use_cache"] = False
+            attn_impl = (
+                getattr(self.config, "attn_impl", None)
+                or getattr(self.model_config, "_attn_implementation", None)
+            )
             if (
                 is_qwen3_moe_model(self.model_config.model_type)
                 or is_qwen3_vl_model(self.model_config.model_type)
                 or is_qwen3_5_model(self.model_config.model_type)
+                or attn_impl in {"sdpa", "eager", "flex_attention"}
             ):
                 mb["attention_mask"] = None
                 padded_mb["attention_mask"] = None

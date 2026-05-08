@@ -29,6 +29,7 @@ export TRANSFORMERS_NO_TF="${TRANSFORMERS_NO_TF:-1}"
 export USE_TF="${USE_TF:-0}"
 export USE_FLAX="${USE_FLAX:-0}"
 export TF_CPP_MIN_LOG_LEVEL="${TF_CPP_MIN_LOG_LEVEL:-3}"
+export AREAL_FORK_READINESS_TIMEOUT="${AREAL_FORK_READINESS_TIMEOUT:-180}"
 export PYTHONUNBUFFERED=1
 
 CONFIG="${1:-$REPO_ROOT/rlvr_demo/configs/qwen3_4b_terminal_grpo_h200_1000.yaml}"
@@ -36,9 +37,32 @@ if [[ $# -gt 0 ]]; then
   shift
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker is required for Terminal-Bench/Nemotron terminal task GRPO on this workflow." >&2
-  exit 2
+USE_REMOTE_TASK_SERVICE=0
+case "${TERMINAL_GRPO_FORCE_REMOTE_TASK_SERVICE:-1}" in
+  1|true|TRUE|yes|YES|on|ON) USE_REMOTE_TASK_SERVICE=1 ;;
+esac
+
+if [[ -n "${TERMINAL_TASK_SERVICE_URL:-}" || -n "${TERMINAL_TASK_SERVICE_URL_FILE:-}" ]]; then
+  USE_REMOTE_TASK_SERVICE=1
+elif [[ "$USE_REMOTE_TASK_SERVICE" != "1" ]] && \
+  [[ "${TERMINAL_GRPO_SKIP_DOCKER_PREFLIGHT:-0}" != "1" ]] && \
+  { ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; }; then
+  USE_REMOTE_TASK_SERVICE=1
+fi
+
+if [[ "$USE_REMOTE_TASK_SERVICE" == "1" ]]; then
+  if [[ -z "${TERMINAL_TASK_SERVICE_URL:-}" && -z "${TERMINAL_TASK_SERVICE_URL_FILE:-}" ]]; then
+    echo "Starting Terminal task service on m7i CPU partition." >&2
+    TERMINAL_TASK_SERVICE_URL="$(
+      "$SCRIPT_DIR/run_terminal_task_service_slurm_cpu.sh" --wait --print-url
+    )"
+    export TERMINAL_TASK_SERVICE_URL
+  fi
+  if [[ -n "${TERMINAL_TASK_SERVICE_URL:-}" ]]; then
+    echo "Using remote Terminal task service: $TERMINAL_TASK_SERVICE_URL" >&2
+  else
+    echo "Using remote Terminal task service URL file: $TERMINAL_TASK_SERVICE_URL_FILE" >&2
+  fi
 fi
 
 cd "$REPO_ROOT"

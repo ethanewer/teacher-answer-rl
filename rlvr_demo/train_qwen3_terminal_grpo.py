@@ -42,7 +42,7 @@ def main(args: list[str]) -> None:
     if config.valid_dataset is not None:
         valid_dataset = _load_dataset(config.valid_dataset, config.seed)
 
-    workflow_kwargs = dict(
+    common_workflow_kwargs = dict(
         gconfig=config.gconfig,
         tokenizer=tokenizer,
         n_trajs=config.n_trajs,
@@ -54,8 +54,30 @@ def main(args: list[str]) -> None:
         task_timeouts=config.task_timeouts,
         filter_uniform_reward=config.filter_uniform_reward,
         encourage_completion_reward=config.encourage_completion_reward,
+        terminal_task_service_url=config.terminal_task_service_url,
+        terminal_task_service_url_file=config.terminal_task_service_url_file,
         dump_dir=os.path.join(StatsLogger.get_log_path(config.stats_logger), "generated"),
     )
+    if config.agent_harness == "default":
+        workflow = "rlvr_demo.default_agent_terminal_grpo.DefaultAgentTerminalGRPOWorkflow"
+        workflow_kwargs = {
+            **common_workflow_kwargs,
+            "tool_call_parser": config.tool_call_parser,
+            "reasoning_parser": config.reasoning_parser,
+            "chat_template_type": config.chat_template_type,
+            "export_style": config.export_style,
+        }
+    elif config.agent_harness == "terminus":
+        workflow = "rlvr_demo.terminal_task_grpo.TerminusTerminalGRPOWorkflow"
+        workflow_kwargs = {
+            **common_workflow_kwargs,
+            "enable_thinking": config.enable_thinking,
+        }
+    else:
+        raise ValueError(
+            f"Unsupported terminal GRPO agent_harness={config.agent_harness!r}; "
+            "expected 'terminus' or 'default'"
+        )
     eval_workflow_kwargs = workflow_kwargs.copy()
     eval_workflow_kwargs["gconfig"] = config.eval_gconfig
     eval_workflow_kwargs["n_trajs"] = 1
@@ -66,9 +88,9 @@ def main(args: list[str]) -> None:
         valid_dataset=valid_dataset,
     ) as trainer:
         trainer.train(
-            workflow="rlvr_demo.terminal_task_grpo.TerminusTerminalGRPOWorkflow",
+            workflow=workflow,
             workflow_kwargs=workflow_kwargs,
-            eval_workflow="rlvr_demo.terminal_task_grpo.TerminusTerminalGRPOWorkflow",
+            eval_workflow=workflow,
             eval_workflow_kwargs=eval_workflow_kwargs,
         )
 
