@@ -1,5 +1,5 @@
 experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-h200
-trial_name: qwen3_4b_thinking_easy_default_a1r7_b32x8_ctx64k_o8192_t20_mb32k_12h
+trial_name: qwen3_4b_thinking_easy_default_a1r7_b32x8_ctx64k_o8192_t20_mb32k_12h_dockerfix
 
 seed: 7
 enable_offload: false
