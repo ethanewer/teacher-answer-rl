@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import time
 import textwrap
 import unicodedata
 import uuid
@@ -594,6 +595,7 @@ class DefaultAgentTerminalTaskRunner:
         task_timeouts: TerminalTaskTimeouts,
         encourage_completion_reward: bool,
         executor: ThreadPoolExecutor,
+        trajectory_timeout: float | None = None,
         task_service_url: str | None = None,
         task_service_url_file: str | None = None,
     ):
@@ -606,9 +608,29 @@ class DefaultAgentTerminalTaskRunner:
         self.task_timeouts = task_timeouts
         self.encourage_completion_reward = encourage_completion_reward
         self.executor = executor
+        self.trajectory_timeout = trajectory_timeout
         self.task_service_url = task_service_url.rstrip("/") if task_service_url else None
         self.task_service_url_file = task_service_url_file
         self.remote_session_id: str | None = None
+
+    def _remaining_trajectory_timeout(self, started_at: float) -> float | None:
+        if self.trajectory_timeout is None:
+            return None
+        return max(0.0, self.trajectory_timeout - (time.monotonic() - started_at))
+
+    async def _await_with_trajectory_timeout(self, awaitable, started_at: float):
+        timeout = self._remaining_trajectory_timeout(started_at)
+        if timeout is None:
+            return await awaitable
+        if timeout <= 0.0:
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            elif hasattr(awaitable, "cancel"):
+                awaitable.cancel()
+            raise TimeoutError(
+                f"trajectory exceeded {self.trajectory_timeout:.1f}s budget"
+            )
+        return await asyncio.wait_for(awaitable, timeout=timeout)
 
     def _resolved_task_service_url(self) -> str | None:
         if self.task_service_url:
@@ -882,27 +904,34 @@ class DefaultAgentTerminalTaskRunner:
             {"role": "user", "content": user_prompt},
         ]
         tools = [spec.api_definition() for spec in TOOL_SPECS]
+        started_at = time.monotonic()
 
         try:
             async with atrace_scope(
                 f"default_agent_reset_env:{task_name},traj:{traj_i}",
                 args={"uid": uid, "timeout": self.task_timeouts.reset_env},
             ):
-                await asyncio.wait_for(
-                    self._remote_reset_env(data, uid),
-                    timeout=self.task_timeouts.reset_env + 30,
+                await self._await_with_trajectory_timeout(
+                    asyncio.wait_for(
+                        self._remote_reset_env(data, uid),
+                        timeout=self.task_timeouts.reset_env + 30,
+                    ),
+                    started_at,
                 )
 
             reward: float | None = 0.0
             for turn in range(self.max_turns):
                 self._assert_single_user_message(messages)
                 try:
-                    response = await client.chat.completions.create(
-                        messages=messages,
-                        tools=tools,
-                        max_completion_tokens=self.max_tokens_per_turn,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
+                    response = await self._await_with_trajectory_timeout(
+                        client.chat.completions.create(
+                            messages=messages,
+                            tools=tools,
+                            max_completion_tokens=self.max_tokens_per_turn,
+                            temperature=self.temperature,
+                            top_p=self.top_p,
+                        ),
+                        started_at,
                     )
                 except ValueError as exc:
                     if not _is_context_limit_error(exc):
@@ -930,9 +959,16 @@ class DefaultAgentTerminalTaskRunner:
                     f"turn {turn + 1} tool_calls={names}",
                     flush=True,
                 )
-                for tool_result in await asyncio.gather(
-                    *[self._execute_tool_call(tool_call) for tool_call in tool_calls]
-                ):
+                tool_results = await self._await_with_trajectory_timeout(
+                    asyncio.gather(
+                        *[
+                            self._execute_tool_call(tool_call)
+                            for tool_call in tool_calls
+                        ]
+                    ),
+                    started_at,
+                )
+                for tool_result in tool_results:
                     messages.append(tool_result)
                 if turn == self.max_turns - 1:
                     break
@@ -942,9 +978,12 @@ class DefaultAgentTerminalTaskRunner:
                 "reward",
                 start_payload={"task_name": task_name, "traj_i": traj_i},
             ):
-                reward = await asyncio.wait_for(
-                    self._remote_evaluate_completion(),
-                    timeout=self.task_timeouts.verifier + 30,
+                reward = await self._await_with_trajectory_timeout(
+                    asyncio.wait_for(
+                        self._remote_evaluate_completion(),
+                        timeout=self.task_timeouts.verifier + 30,
+                    ),
+                    started_at,
                 )
             try:
                 client.set_last_reward(float(reward))
@@ -961,6 +1000,11 @@ class DefaultAgentTerminalTaskRunner:
             )
             return float(reward)
         except TimeoutError:
+            print(
+                f"Default-agent GRPO task {task_name} traj {traj_i} timed out "
+                f"after {time.monotonic() - started_at:.1f}s",
+                flush=True,
+            )
             return None
         except Exception as exc:
             print(f"Default-agent GRPO task {task_name} failed: {exc}", flush=True)
@@ -994,6 +1038,7 @@ class DefaultAgentTerminalGRPOWorkflow(RolloutWorkflow):
         reasoning_parser: str = "qwen3",
         chat_template_type: str = "concat",
         export_style: str = "concat",
+        trajectory_timeout: float | None = None,
     ):
         self.gconfig = gconfig
         self.gconfig.n_samples = 1
@@ -1016,6 +1061,7 @@ class DefaultAgentTerminalGRPOWorkflow(RolloutWorkflow):
         self.reasoning_parser = reasoning_parser
         self.chat_template_type = chat_template_type
         self.export_style = export_style
+        self.trajectory_timeout = trajectory_timeout
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
     async def arun_episode(self, engine, data):
@@ -1045,6 +1091,7 @@ class DefaultAgentTerminalGRPOWorkflow(RolloutWorkflow):
                     task_timeouts=self.task_timeouts,
                     encourage_completion_reward=self.encourage_completion_reward,
                     executor=self.executor,
+                    trajectory_timeout=self.trajectory_timeout,
                     task_service_url=self.terminal_task_service_url,
                     task_service_url_file=self.terminal_task_service_url_file,
                 ).run_agent(data=data, client=clients[i], uid=uids[i], traj_i=i)

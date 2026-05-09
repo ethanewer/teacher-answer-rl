@@ -93,6 +93,7 @@ class TerminalTaskGRPOConfig(GRPOConfig):
     observation_max_chars: int = field(default=8000)
     turn_discount: float = field(default=0.9)
     task_timeouts: TerminalTaskTimeouts = field(default_factory=TerminalTaskTimeouts)
+    trajectory_timeout: float | None = field(default=None)
     filter_uniform_reward: bool = field(default=False)
     encourage_completion_reward: bool = field(default=False)
     terminal_task_service_url: str | None = field(default=None)

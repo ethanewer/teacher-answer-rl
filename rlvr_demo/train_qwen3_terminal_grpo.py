@@ -66,6 +66,7 @@ def main(args: list[str]) -> None:
             "reasoning_parser": config.reasoning_parser,
             "chat_template_type": config.chat_template_type,
             "export_style": config.export_style,
+            "trajectory_timeout": config.trajectory_timeout,
         }
     elif config.agent_harness == "terminus":
         workflow = "rlvr_demo.terminal_task_grpo.TerminusTerminalGRPOWorkflow"
