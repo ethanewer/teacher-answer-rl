@@ -36,6 +36,7 @@ from areal.api.cli_args import (
     SchedulingSpec,
 )
 from areal.infra.rpc.serialization import deserialize_value
+from areal.infra.scheduler.exceptions import EngineCallError
 from areal.infra.utils.concurrent import run_async_task
 from areal.utils import logging, perf_tracer
 from areal.utils.data import cycle_dataloader
@@ -47,6 +48,13 @@ from ..staleness_manager import StalenessManager
 from ..workflow_executor import BatchTaskDispatcher, TaskIdGenerator
 
 logger = logging.getLogger("RolloutController")
+
+
+def _is_wait_for_task_timeout(exc: EngineCallError) -> bool:
+    return (
+        exc.method == "wait_for_task"
+        and "Timed out waiting for task" in exc.reason
+    )
 
 
 # NOTE: remote task input has a slightly different
@@ -813,19 +821,69 @@ class RolloutController:
 
                 assert task_id == engine_task_id, (task_id, engine_task_id)
 
-                # Wait for callback to resolve the future
-                await asyncio.wait_for(future, timeout=self.config.request_timeout)
+                # Wait for the callback, but periodically poll the worker as a
+                # fallback. A completed rollout whose callback is lost otherwise
+                # occupies staleness capacity until request_timeout expires.
+                loop = asyncio.get_running_loop()
+                started_at = loop.time()
+                deadline = started_at + self.config.request_timeout
+                next_poll_at = started_at + min(300.0, self.config.request_timeout)
+                result = None
+                recovered_by_poll = False
+                while True:
+                    now = loop.time()
+                    remaining = deadline - now
+                    if remaining <= 0:
+                        raise TimeoutError
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(future),
+                            timeout=min(30.0, remaining),
+                        )
+                        result = await self.scheduler.async_call_engine(
+                            worker.id,
+                            "wait_for_task",
+                            engine_name=engine_name,
+                            task_id=engine_task_id,
+                            timeout=0.1,  # A short time to prevent blocking other requests
+                            raise_timeout=False,
+                            http_timeout=self.config.request_timeout,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        pass
 
-                # Fetch the result
-                result = await self.scheduler.async_call_engine(
-                    worker.id,
-                    "wait_for_task",
-                    engine_name=engine_name,
-                    task_id=engine_task_id,
-                    timeout=0.1,  # A short time to prevent blocking other requests
-                    raise_timeout=False,
-                    http_timeout=self.config.request_timeout,
-                )
+                    now = loop.time()
+                    if now < next_poll_at:
+                        continue
+                    next_poll_at = now + 60.0
+                    try:
+                        result = await self.scheduler.async_call_engine(
+                            worker.id,
+                            "wait_for_task",
+                            engine_name=engine_name,
+                            task_id=engine_task_id,
+                            timeout=0.1,
+                            raise_timeout=True,
+                            http_timeout=min(30.0, max(1.0, remaining)),
+                            max_retries=1,
+                        )
+                    except EngineCallError as exc:
+                        if _is_wait_for_task_timeout(exc):
+                            continue
+                        raise
+                    else:
+                        with self._futures_lock:
+                            self._pending_futures.pop(task_id, None)
+                        recovered_by_poll = True
+                        break
+
+                if recovered_by_poll:
+                    logger.warning(
+                        "Recovered rollout task %s by polling worker %s after callback delay",
+                        task_id,
+                        worker.id,
+                    )
 
                 traj = result
                 if traj is not None:

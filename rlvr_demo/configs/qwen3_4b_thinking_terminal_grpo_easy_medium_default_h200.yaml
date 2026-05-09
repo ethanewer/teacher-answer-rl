@@ -1,10 +1,10 @@
-experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-fastmedium-h200
-trial_name: qwen3_4b_thinking_easyfastmedium50_default_a1tp2r6_b32x8_ctx40k_o8192_t20_obs1k_mb40k_r36_s24_12h
+experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-nodepmedium-h200
+trial_name: qwen3_4b_thinking_easynodepmedium50_default_a1tp2r6_b32x8_ctx40k_o8192_t20_obs1k_mb40k_r36_s30_12h
 
 seed: 7
 enable_offload: false
 total_train_epochs: 1
-total_train_steps: 24
+total_train_steps: 30
 tokenizer_path: ${actor.path}
 
 n_trajs: 8
@@ -28,8 +28,8 @@ task_timeouts:
   reset_agent: 120.0
   agent_step: 600.0
   command: 180.0
-  verifier: 1200.0
-  cleanup: null
+  verifier: 900.0
+  cleanup: 120.0
 
 cluster:
   n_nodes: 1
@@ -51,6 +51,7 @@ rollout:
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 1
   setup_timeout: 900
+  request_timeout: 2400
   enable_rollout_tracing: false
   scheduling_spec: ${actor.scheduling_spec}
   fileroot: ${cluster.fileroot}
@@ -181,7 +182,7 @@ train_dataset:
   shuffle: false
   pin_memory: true
   num_workers: 4
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/easy_medium_fast_50_50_b32_s40/manifest.csv
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/rlvr_demo/manifests/easy_medium_nodep_50_50_b32_s30.csv
   split: train
   type: rl
   max_length: 40960
