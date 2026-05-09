@@ -1,5 +1,5 @@
 experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-easy-nodepmedium-h200
-trial_name: qwen3_4b_thinking_easynodepmedium50_default_a1tp2r6_b32x8_ctx40k_o8192_t20_obs1k_mb40k_r36_s30_12h
+trial_name: qwen3_4b_thinking_easynodepmedium50_default_a1tp2r6_b32x8_ctx48k_o8192_t20_obs1k_mb48k_r36_s30_12h
 
 seed: 7
 enable_offload: false
@@ -10,7 +10,7 @@ tokenizer_path: ${actor.path}
 n_trajs: 8
 max_turns: 20
 max_workers: 36
-max_tokens_per_trajectory: 40960
+max_tokens_per_trajectory: 49152
 observation_max_chars: 1000
 turn_discount: 0.9
 filter_uniform_reward: false
@@ -63,7 +63,7 @@ gconfig:
   n_samples: 1
   min_new_tokens: 0
   max_new_tokens: 8192
-  max_tokens: 40960
+  max_tokens: 49152
   greedy: false
   temperature: 1.0
   top_p: 1.0
@@ -73,7 +73,7 @@ eval_gconfig:
   n_samples: 1
   min_new_tokens: 0
   max_new_tokens: 8192
-  max_tokens: 40960
+  max_tokens: 49152
   greedy: false
   temperature: 1.0
   top_p: 1.0
@@ -89,7 +89,7 @@ actor:
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 40960
+    max_tokens_per_mb: 49152
     packing_algorithm: ffd
   optimizer:
     type: adam
@@ -172,7 +172,7 @@ vllm:
   skip_tokenizer_init: false
   dtype: ${actor.dtype}
   max_num_seqs: 64
-  max_model_len: 40960
+  max_model_len: 49152
   gpu_memory_utilization: 0.80
   no_enable_prefix_caching: false
   uvicorn_log_level: warning
@@ -185,7 +185,7 @@ train_dataset:
   path: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/rlvr_demo/manifests/easy_medium_nodep_50_50_b32_s30.csv
   split: train
   type: rl
-  max_length: 40960
+  max_length: 49152
   scheduling_spec: null
   dataset_kwargs:
     split_part: train

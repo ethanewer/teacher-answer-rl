@@ -308,6 +308,13 @@ def _tool_call_name_and_args(tool_call: Any) -> tuple[str, dict[str, Any], str]:
     return name, args, call_id
 
 
+def _is_context_limit_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "len of prompt tokens" in text and (
+        "max_total_tokens" in text or "engine_max_tokens" in text
+    )
+
+
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 
 
@@ -889,13 +896,23 @@ class DefaultAgentTerminalTaskRunner:
             reward: float | None = 0.0
             for turn in range(self.max_turns):
                 self._assert_single_user_message(messages)
-                response = await client.chat.completions.create(
-                    messages=messages,
-                    tools=tools,
-                    max_completion_tokens=self.max_tokens_per_turn,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                )
+                try:
+                    response = await client.chat.completions.create(
+                        messages=messages,
+                        tools=tools,
+                        max_completion_tokens=self.max_tokens_per_turn,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                    )
+                except ValueError as exc:
+                    if not _is_context_limit_error(exc):
+                        raise
+                    print(
+                        f"Default-agent GRPO task {task_name} traj {traj_i} "
+                        f"context exhausted at turn {turn + 1}: {exc}; evaluating",
+                        flush=True,
+                    )
+                    break
                 assistant_message = self._assistant_message_with_local_tool_parsing(
                     response=response,
                     client=client,
@@ -929,7 +946,15 @@ class DefaultAgentTerminalTaskRunner:
                     self._remote_evaluate_completion(),
                     timeout=self.task_timeouts.verifier + 30,
                 )
-            client.set_last_reward(float(reward))
+            try:
+                client.set_last_reward(float(reward))
+            except RuntimeError:
+                print(
+                    f"Default-agent GRPO task {task_name} traj {traj_i} "
+                    "has no model interaction to reward",
+                    flush=True,
+                )
+                return None
             print(
                 f"Default-agent GRPO task {task_name} traj {traj_i} reward={float(reward):.4f}",
                 flush=True,
