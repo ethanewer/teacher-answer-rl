@@ -57,6 +57,10 @@ def _is_wait_for_task_timeout(exc: EngineCallError) -> bool:
     )
 
 
+class _RolloutRequestTimeout(Exception):
+    """Controller-side deadline for one remote rollout request."""
+
+
 # NOTE: remote task input has a slightly different
 # type annotation, which disallows workflow object or types
 @dataclass
@@ -834,7 +838,7 @@ class RolloutController:
                     now = loop.time()
                     remaining = deadline - now
                     if remaining <= 0:
-                        raise TimeoutError
+                        raise _RolloutRequestTimeout
                     try:
                         await asyncio.wait_for(
                             asyncio.shield(future),
@@ -899,7 +903,7 @@ class RolloutController:
                     logger.info(f"Finish but reject rollout. {self._rollout_stats()}")
                 return None
 
-            except TimeoutError:
+            except _RolloutRequestTimeout:
                 if task_id is not None:
                     with self._futures_lock:
                         self._pending_futures.pop(task_id, None)
