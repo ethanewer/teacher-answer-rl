@@ -334,10 +334,15 @@ async def _amain(args: argparse.Namespace) -> None:
 
     if rows_path.exists() and not args.resume:
         rows_path.unlink()
+    attempt_indices = (
+        list(args.attempt_index)
+        if args.attempt_index is not None
+        else list(range(args.n_attempts))
+    )
     tasks = [
         guarded(task_name, attempt)
         for task_name in args.task
-        for attempt in range(args.n_attempts)
+        for attempt in attempt_indices
     ]
     await asyncio.gather(*tasks)
     executor.shutdown(wait=False, cancel_futures=True)
@@ -359,6 +364,7 @@ def main() -> None:
     )
     parser.add_argument("--task", action="append", choices=EASY10_TASKS, default=[])
     parser.add_argument("--n-attempts", type=int, default=5)
+    parser.add_argument("--attempt-index", action="append", type=int)
     parser.add_argument("--n-concurrent", type=int, default=5)
     parser.add_argument("--max-turns", type=int, default=40)
     parser.add_argument("--max-tokens-per-turn", type=int, default=8192)

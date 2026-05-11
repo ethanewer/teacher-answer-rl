@@ -71,7 +71,7 @@ Summary paths:
 | Model | Completed | Errors | Full passes | Mean reward | Mean reward, error=0 | pass@1 | pass@2 | pass@4 | pass@5 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Qwen3 before RL | 50/50 | 0 | 8/50 | 0.3975 | 0.3975 | 0.160 | 0.240 | 0.300 | 0.300 |
-| Qwen3 after teacher-answer RL | 49/50 | 1 | 9/50 | 0.4082 | 0.4000 | 0.180 | 0.290 | 0.380 | 0.400 |
+| Qwen3 after teacher-answer RL | 50/50 | 0 | 9/50 | 0.4075 | 0.4075 | 0.180 | 0.290 | 0.380 | 0.400 |
 
 Per-task full passes and mean rewards:
 
@@ -80,7 +80,7 @@ Per-task full passes and mean rewards:
 | modernize-scientific-stack | 0.9000 | 4/5 | 0.8000 | 3/5 |  |
 | log-summary-date-ranges | 0.4000 | 0/5 | 0.5000 | 0/5 |  |
 | multi-source-data-merger | 0.3333 | 0/5 | 0.3333 | 1/5 |  |
-| nginx-request-logging | 0.2750 | 0/5 | 0.1250 | 0/5 | after had 1 context-limit exception |
+| nginx-request-logging | 0.2750 | 0/5 | 0.1750 | 0/5 | one after-RL context-limit row was repaired with a targeted rerun |
 | git-leak-recovery | 0.8000 | 2/5 | 0.8000 | 2/5 |  |
 | fix-git | 0.0000 | 0/5 | 0.0000 | 0/5 |  |
 | constraints-scheduling | 0.6000 | 2/5 | 0.8000 | 3/5 |  |
@@ -91,5 +91,5 @@ Per-task full passes and mean rewards:
 ## Notes
 
 - The trained checkpoint slightly improved pass metrics on this default-agent easy-10 eval: full passes went from 8/50 to 9/50, and pass@5 went from 0.30 to 0.40.
-- The after-RL eval had one `nginx-request-logging` trial exceed the vLLM request boundary with 40961 input tokens plus 8192 requested output tokens. The eval script was patched afterward so future context-limit rows break to verifier scoring instead of dropping the trial.
+- The initial after-RL eval had one `nginx-request-logging` trial exceed the vLLM request boundary with 40961 input tokens plus 8192 requested output tokens. The eval script was patched afterward so future context-limit rows break to verifier scoring instead of dropping the trial. That failed row was replaced with a targeted rerun of the same task/attempt, which completed with reward 0.375.
 - The original CPU task service was left active after eval: `{"ok":true,"sessions":32,"max_sessions":128,"max_starts":24}`.
