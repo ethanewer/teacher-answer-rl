@@ -145,6 +145,32 @@ def _prepare_terminal_bench_task_locked(task_dir: Path, adapter_dir: Path) -> Pa
     build_context = adapter_dir / "build-context"
     shutil.copytree(task_dir / "environment", build_context, dirs_exist_ok=True)
     (build_context / "files").mkdir(exist_ok=True)
+    dockerfile_path = build_context / "Dockerfile"
+    dockerfile_text = dockerfile_path.read_text(encoding="utf-8", errors="replace")
+    if "terminal-task-service: ensure Terminal-Bench session tools" not in dockerfile_text:
+        dockerfile_path.write_text(
+            dockerfile_text.rstrip()
+            + """
+
+# terminal-task-service: ensure Terminal-Bench session tools are available.
+RUN set -eux; \
+    if ! command -v tmux >/dev/null 2>&1 || ! command -v asciinema >/dev/null 2>&1; then \
+      if command -v apt-get >/dev/null 2>&1; then \
+        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tmux asciinema && rm -rf /var/lib/apt/lists/*; \
+      elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache tmux asciinema; \
+      elif command -v dnf >/dev/null 2>&1; then \
+        dnf install -y tmux asciinema && dnf clean all; \
+      elif command -v yum >/dev/null 2>&1; then \
+        yum install -y tmux asciinema && yum clean all; \
+      else \
+        echo "tmux and asciinema are required by Terminal-Bench but no supported package manager was found" >&2; exit 1; \
+      fi; \
+    fi
+"""
+            + "\n",
+            encoding="utf-8",
+        )
 
     source_run_tests = tests_dir / "test.sh"
     target_run_tests = adapter_dir / "run-tests.sh"
