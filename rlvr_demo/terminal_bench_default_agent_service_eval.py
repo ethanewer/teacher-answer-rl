@@ -165,16 +165,27 @@ async def _run_trial(
         for turn in range(args.max_turns):
             _assert_single_user_message(messages)
             try:
-                response = await client.chat.completions.create(
-                    model=args.model,
-                    messages=messages,
-                    tools=[spec.api_definition() for spec in TOOL_SPECS],
-                    max_tokens=args.max_tokens_per_turn,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    extra_body={"top_k": args.top_k},
-                    timeout=args.model_timeout,
-                )
+                request: dict[str, Any] = {
+                    "model": args.model,
+                    "messages": messages,
+                    "tools": [spec.api_definition() for spec in TOOL_SPECS],
+                    "tool_choice": "auto",
+                    "max_tokens": args.max_tokens_per_turn,
+                    "temperature": args.temperature,
+                    "top_p": args.top_p,
+                    "timeout": args.model_timeout,
+                }
+                if not args.omit_top_k_extra_body:
+                    request["extra_body"] = {"top_k": args.top_k}
+                if args.thinking_type:
+                    extra_body = dict(request.get("extra_body") or {})
+                    extra_body["thinking"] = {"type": args.thinking_type}
+                    if args.reasoning_effort:
+                        extra_body["thinking"]["reasoning_effort"] = (
+                            args.reasoning_effort
+                        )
+                    request["extra_body"] = extra_body
+                response = await client.chat.completions.create(**request)
             except Exception as exc:
                 if not _is_context_limit_error(exc):
                     raise
@@ -276,6 +287,9 @@ def _summarize(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[str
         "temperature": args.temperature,
         "top_p": args.top_p,
         "top_k": args.top_k,
+        "omit_top_k_extra_body": args.omit_top_k_extra_body,
+        "thinking_type": args.thinking_type,
+        "reasoning_effort": args.reasoning_effort,
         "num_trials": len(rows),
         "completed_trials": len(rewards),
         "errors": sum(1 for row in rows if row.get("error")),
@@ -371,6 +385,9 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.8)
     parser.add_argument("--top-k", type=int, default=20)
+    parser.add_argument("--omit-top-k-extra-body", action="store_true")
+    parser.add_argument("--thinking-type", choices=["enabled", "disabled"])
+    parser.add_argument("--reasoning-effort", choices=["high", "max"])
     parser.add_argument("--observation-max-chars", type=int, default=8000)
     parser.add_argument("--trajectory-timeout", type=float, default=3600.0)
     parser.add_argument("--model-timeout", type=float, default=600.0)

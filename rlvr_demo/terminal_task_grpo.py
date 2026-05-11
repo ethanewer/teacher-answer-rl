@@ -111,6 +111,8 @@ class TerminalTaskGRPOConfig(GRPOConfig):
     teacher_answer_max_tokens: int = field(default=1024)
     teacher_answer_temperature: float = field(default=0.0)
     teacher_answer_top_p: float = field(default=1.0)
+    teacher_answer_thinking_type: str | None = field(default=None)
+    teacher_answer_reasoning_effort: str | None = field(default=None)
     teacher_answer_timeout: float = field(default=120.0)
     teacher_answer_max_retries: int = field(default=3)
     teacher_answer_concurrency: int = field(default=32)

@@ -83,6 +83,8 @@ def main(args: list[str]) -> None:
                     "teacher_answer_max_tokens": config.teacher_answer_max_tokens,
                     "teacher_answer_temperature": config.teacher_answer_temperature,
                     "teacher_answer_top_p": config.teacher_answer_top_p,
+                    "teacher_answer_thinking_type": config.teacher_answer_thinking_type,
+                    "teacher_answer_reasoning_effort": config.teacher_answer_reasoning_effort,
                     "teacher_answer_timeout": config.teacher_answer_timeout,
                     "teacher_answer_max_retries": config.teacher_answer_max_retries,
                     "teacher_answer_concurrency": config.teacher_answer_concurrency,

@@ -1486,6 +1486,8 @@ class DefaultAgentTerminalTeacherAnswerRLWorkflow(RolloutWorkflow):
         teacher_answer_max_tokens: int = 1024,
         teacher_answer_temperature: float = 0.0,
         teacher_answer_top_p: float = 1.0,
+        teacher_answer_thinking_type: str | None = None,
+        teacher_answer_reasoning_effort: str | None = None,
         teacher_answer_timeout: float = 120.0,
         teacher_answer_max_retries: int = 3,
         teacher_answer_concurrency: int = 32,
@@ -1518,6 +1520,8 @@ class DefaultAgentTerminalTeacherAnswerRLWorkflow(RolloutWorkflow):
         self.teacher_answer_max_tokens = teacher_answer_max_tokens
         self.teacher_answer_temperature = teacher_answer_temperature
         self.teacher_answer_top_p = teacher_answer_top_p
+        self.teacher_answer_thinking_type = teacher_answer_thinking_type
+        self.teacher_answer_reasoning_effort = teacher_answer_reasoning_effort
         self.teacher_answer_timeout = teacher_answer_timeout
         self.teacher_answer_max_retries = teacher_answer_max_retries
         self.teacher_answer_semaphore = asyncio.Semaphore(
@@ -1552,15 +1556,27 @@ class DefaultAgentTerminalTeacherAnswerRLWorkflow(RolloutWorkflow):
         turn_record: DefaultAgentTurnRecord,
     ) -> str:
         messages = _external_teacher_messages(turn_record.prefix_messages)
+        extra_body: dict[str, Any] = {}
+        if self.teacher_answer_thinking_type:
+            extra_body["thinking"] = {"type": self.teacher_answer_thinking_type}
+            if self.teacher_answer_reasoning_effort:
+                extra_body["thinking"]["reasoning_effort"] = (
+                    self.teacher_answer_reasoning_effort
+                )
         async with self.teacher_answer_semaphore:
+            request: dict[str, Any] = {
+                "model": self.teacher_answer_model,
+                "messages": messages,
+                "tools": [spec.api_definition() for spec in TOOL_SPECS],
+                "tool_choice": "auto",
+                "max_tokens": self.teacher_answer_max_tokens,
+                "temperature": self.teacher_answer_temperature,
+                "top_p": self.teacher_answer_top_p,
+            }
+            if extra_body:
+                request["extra_body"] = extra_body
             response = await self._get_teacher_client().chat.completions.create(
-                model=self.teacher_answer_model,
-                messages=messages,
-                tools=[spec.api_definition() for spec in TOOL_SPECS],
-                tool_choice="auto",
-                max_tokens=self.teacher_answer_max_tokens,
-                temperature=self.teacher_answer_temperature,
-                top_p=self.teacher_answer_top_p,
+                **request
             )
         message = response.choices[0].message.model_dump(exclude_none=True)
         return _format_qwen_tool_call_target(_teacher_tool_calls_from_message(message))
