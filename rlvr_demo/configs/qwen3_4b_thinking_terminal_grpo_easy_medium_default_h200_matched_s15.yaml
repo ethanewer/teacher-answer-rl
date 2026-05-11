@@ -1,0 +1,252 @@
+experiment_name: qwen3-4b-thinking-default-agent-terminal-grpo-matched-easy-nodepmedium-h200
+trial_name: qwen3_4b_thinking_easymedium50_default_grpo_matched_a1tp2r6_b32x8_ctx48k_o8192_t20_obs1k_mb48k_r16_tt1500_req2400_ckpt1_s15
+
+seed: 7
+enable_offload: false
+total_train_epochs: 1
+total_train_steps: 15
+tokenizer_path: ${actor.path}
+
+n_trajs: 8
+max_turns: 20
+max_workers: 36
+max_tokens_per_trajectory: 49152
+observation_max_chars: 1000
+trajectory_timeout: 1500.0
+turn_discount: 0.9
+filter_uniform_reward: false
+encourage_completion_reward: false
+enable_thinking: false
+agent_harness: default
+tool_call_parser: qwen3_xml
+reasoning_parser: qwen3
+chat_template_type: concat
+export_style: concat
+terminal_task_service_url: ${oc.env:TERMINAL_TASK_SERVICE_URL,null}
+terminal_task_service_url_file: ${oc.env:TERMINAL_TASK_SERVICE_URL_FILE,null}
+task_timeouts:
+  reset_env: 900.0
+  reset_agent: 120.0
+  agent_step: 300.0
+  command: 120.0
+  verifier: 300.0
+  cleanup: 120.0
+
+teacher_answer_reward: false
+teacher_answer_model: deepseek-v4-pro
+teacher_answer_base_url: ${oc.env:DEEPSEEK_BASE_URL,null}
+teacher_answer_api_key_env: DEEPSEEK_API_KEY
+teacher_answer_max_tokens: 8192
+teacher_answer_temperature: 0.0
+teacher_answer_top_p: 1.0
+teacher_answer_timeout: 240.0
+teacher_answer_max_retries: 3
+teacher_answer_concurrency: 32
+teacher_answer_reward_weight: 1.0
+verifier_reward_weight: 1.0
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 8
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent
+  name_resolve:
+    type: nfs
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent/name_resolve
+
+scheduler:
+  type: local
+
+rollout:
+  backend: "vllm:d6p1t1"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  max_concurrent_rollouts: 16
+  queue_size: 256
+  consumer_batch_size: ${train_dataset.batch_size}
+  max_head_offpolicyness: 1
+  setup_timeout: 900
+  request_timeout: 2400
+  enable_rollout_tracing: false
+  scheduling_spec: ${actor.scheduling_spec}
+  fileroot: ${cluster.fileroot}
+  tokenizer_path: ${tokenizer_path}
+  dump_to_file: true
+  check_trajectory_format: true
+
+gconfig:
+  n_samples: 1
+  min_new_tokens: 0
+  max_new_tokens: 8192
+  max_tokens: 49152
+  greedy: false
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 100000000
+
+eval_gconfig:
+  n_samples: 1
+  min_new_tokens: 0
+  max_new_tokens: 8192
+  max_tokens: 49152
+  greedy: false
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 100000000
+
+actor:
+  backend: "megatron:d1p1t2"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: Qwen/Qwen3-4B-Thinking-2507
+  init_from_scratch: false
+  disable_dropout: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  mb_spec:
+    max_tokens_per_mb: 49152
+    packing_algorithm: ffd
+  optimizer:
+    type: adam
+    lr: 3e-6
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1e-8
+    lr_scheduler_type: constant
+    gradient_clipping: 1.0
+    warmup_steps_proportion: 0.001
+  eps_clip: 0.25
+  temperature: ${gconfig.temperature}
+  reward_scaling: 1.0
+  reward_bias: 0.0
+  kl_ctl: 0.0
+  ppo_n_minibatches: 1
+  recompute_logprob: false
+  use_decoupled_loss: false
+  rejection_sampling: null
+  reward_norm:
+    mean_level: batch
+    std_level: batch
+    group_size: ${n_trajs}
+  adv_norm:
+    mean_level: batch
+    std_level: batch
+  weight_update_mode: xccl
+  max_new_tokens: ${gconfig.max_new_tokens}
+  megatron:
+    bridge_type: mbridge
+    ddp:
+      overlap_grad_reduce: false
+      overlap_param_gather: false
+      use_distributed_optimizer: true
+    use_deterministic_algorithms: false
+  scheduling_spec:
+    - task_type: worker
+      port_count: 2
+      gpu: 1
+      cpu: 16
+      mem: 128
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        PATH: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-megatron/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        NCCL_SOCKET_IFNAME: enp71s0
+        GLOO_SOCKET_IFNAME: enp71s0
+        NCCL_CUMEM_ENABLE: "0"
+        NCCL_NVLS_ENABLE: "0"
+        CUDA_DEVICE_MAX_CONNECTIONS: "1"
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+        HF_HOME: /wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+        HF_HUB_ENABLE_HF_TRANSFER: "1"
+        TRITON_CACHE_DIR: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+        TRITON_CACHE_PATH: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+        TRANSFORMERS_NO_TF: "1"
+        USE_TF: "0"
+        USE_FLAX: "0"
+        TF_CPP_MIN_LOG_LEVEL: "3"
+
+sglang:
+  model_path: ${actor.path}
+  python_executable: ${oc.env:AREAL_SGLANG_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-sglang/bin/python}
+  random_seed: ${seed}
+  skip_tokenizer_init: true
+  dtype: ${actor.dtype}
+  max_running_requests: 128
+  context_length: 65536
+  mem_fraction_static: 0.70
+  attention_backend: flashinfer
+  log_level: warning
+  log_level_http: warning
+  chunked_prefill_size: -1
+  max_prefill_tokens: 65536
+
+vllm:
+  model: ${actor.path}
+  python_executable: ${oc.env:AREAL_VLLM_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-vllm/bin/python}
+  seed: ${seed}
+  skip_tokenizer_init: false
+  dtype: ${actor.dtype}
+  max_num_seqs: 64
+  max_model_len: 49152
+  gpu_memory_utilization: 0.80
+  no_enable_prefix_caching: false
+  uvicorn_log_level: warning
+
+train_dataset:
+  batch_size: 32
+  shuffle: false
+  pin_memory: true
+  num_workers: 4
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/rlvr_demo/manifests/easy_medium_nodep_50_50_b32_s15_resume_from_row480.csv
+  split: train
+  type: rl
+  max_length: 49152
+  scheduling_spec: null
+  dataset_kwargs:
+    split_part: train
+    holdout_size: 0
+    shuffle_records: false
+
+valid_dataset: null
+
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 1
+  freq_secs: null
+
+recover:
+  mode: disabled
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  eval_before_train: false
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  tensorboard:
+    path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent/tensorboard/${experiment_name}/${trial_name}
+  wandb:
+    mode: disabled
+
+perf_tracer:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  enabled: false
+  session_tracer:
+    enabled: false
