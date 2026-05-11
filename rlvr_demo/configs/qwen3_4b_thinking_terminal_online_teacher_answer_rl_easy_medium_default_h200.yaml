@@ -1,5 +1,5 @@
 experiment_name: qwen3-4b-thinking-default-agent-terminal-online-teacher-answer-rl-easy-nodepmedium-h200
-trial_name: qwen3_4b_thinking_easymedium50_default_online_teacher_deepseekv4pro_a1tp2r6_b32x8_ctx48k_o8192_t20_obs1k_mb48k_r16_tt1500_req2400_ckpt1_s15
+trial_name: qwen3_4b_thinking_easymedium50_default_online_teacher_deepseekv4pro_a1tp2r6_b32x8_ctx48k_o8192_t20_obs1k_mb48k_r16_tt1500_req2400_ttok8192_ckpt1_s15
 
 seed: 7
 enable_offload: false
@@ -36,10 +36,10 @@ teacher_answer_reward: true
 teacher_answer_model: deepseek-v4-pro
 teacher_answer_base_url: ${oc.env:DEEPSEEK_BASE_URL,null}
 teacher_answer_api_key_env: DEEPSEEK_API_KEY
-teacher_answer_max_tokens: 1024
+teacher_answer_max_tokens: 8192
 teacher_answer_temperature: 0.0
 teacher_answer_top_p: 1.0
-teacher_answer_timeout: 120.0
+teacher_answer_timeout: 240.0
 teacher_answer_max_retries: 3
 teacher_answer_concurrency: 32
 teacher_answer_reward_weight: 1.0

@@ -316,6 +316,60 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     return parsed
 
 
+def _close_json_fragment(value: str) -> str:
+    """Close a likely truncated JSON object returned as tool arguments."""
+    repaired = _repair_json(value.strip())
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for char in repaired:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in ("}", "]") and stack and stack[-1] == char:
+            stack.pop()
+    if in_string:
+        repaired += '"'
+    repaired += "".join(reversed(stack))
+    return repaired
+
+
+def _parse_teacher_tool_arguments(raw: Any) -> dict[str, Any]:
+    """Best-effort parsing for teacher-only scoring targets.
+
+    DeepSeek occasionally returns a function-call argument string that is
+    truncated or has invalid JSON escaping. Student tool execution stays strict,
+    but teacher-answer scoring should still have a syntactically valid target
+    for the current turn instead of dropping the turn entirely.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+
+    candidates = [raw, _repair_json(raw), _close_json_fragment(raw)]
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        return {"_raw_arguments": parsed}
+    return {"_raw_arguments": raw}
+
+
 def _tool_call_dict(tool_call: Any) -> dict[str, Any]:
     if hasattr(tool_call, "model_dump"):
         return tool_call.model_dump(exclude_none=True)
@@ -330,6 +384,17 @@ def _tool_call_name_and_args(tool_call: Any) -> tuple[str, dict[str, Any], str]:
     name = str(function.get("name") or data.get("name") or "")
     call_id = str(data.get("id") or f"call_{uuid.uuid4().hex[:24]}")
     args = _parse_tool_arguments(function.get("arguments") or data.get("arguments") or {})
+    return name, args, call_id
+
+
+def _teacher_tool_call_name_and_args(tool_call: Any) -> tuple[str, dict[str, Any], str]:
+    data = _tool_call_dict(tool_call)
+    function = data.get("function") or {}
+    name = str(function.get("name") or data.get("name") or "")
+    call_id = str(data.get("id") or f"call_{uuid.uuid4().hex[:24]}")
+    args = _parse_teacher_tool_arguments(
+        function.get("arguments") or data.get("arguments") or {}
+    )
     return name, args, call_id
 
 
@@ -1251,7 +1316,7 @@ def _split_assistant_content_for_teacher(content: str) -> tuple[str, str | None]
 def _format_qwen_tool_call_target(tool_calls: list[Any]) -> str:
     targets: list[str] = []
     for raw_tool_call in tool_calls:
-        name, args, _ = _tool_call_name_and_args(raw_tool_call)
+        name, args, _ = _teacher_tool_call_name_and_args(raw_tool_call)
         if not name:
             continue
         targets.append(
