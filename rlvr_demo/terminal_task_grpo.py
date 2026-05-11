@@ -104,6 +104,18 @@ class TerminalTaskGRPOConfig(GRPOConfig):
     reasoning_parser: str = field(default="qwen3")
     chat_template_type: str = field(default="hf")
     export_style: str = field(default="individual")
+    teacher_answer_reward: bool = field(default=False)
+    teacher_answer_model: str = field(default="deepseek-v4-pro")
+    teacher_answer_base_url: str | None = field(default=None)
+    teacher_answer_api_key_env: str = field(default="DEEPSEEK_API_KEY")
+    teacher_answer_max_tokens: int = field(default=1024)
+    teacher_answer_temperature: float = field(default=0.0)
+    teacher_answer_top_p: float = field(default=1.0)
+    teacher_answer_timeout: float = field(default=120.0)
+    teacher_answer_max_retries: int = field(default=3)
+    teacher_answer_concurrency: int = field(default=32)
+    teacher_answer_reward_weight: float = field(default=1.0)
+    verifier_reward_weight: float = field(default=1.0)
 
 
 class TerminusPayloadError(ValueError):

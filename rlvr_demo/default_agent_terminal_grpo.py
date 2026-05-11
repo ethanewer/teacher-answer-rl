@@ -21,11 +21,14 @@ import unicodedata
 import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+import torch
+from openai import AsyncOpenAI
 from transformers import PreTrainedTokenizerFast
 
 from areal import workflow_context
@@ -33,8 +36,14 @@ from areal.api.cli_args import GenerationHyperparameters
 from areal.api.workflow_api import RolloutWorkflow
 from areal.experimental.openai import ArealOpenAI
 from areal.utils import stats_tracker
+from areal.utils.data import concat_padded_tensors
 from areal.utils.perf_tracer import atrace_scope, atrace_session_phase, session_context
 
+from rlvr_demo.teacher_answer_rl import (
+    _as_tensor,
+    _build_scoring_batch,
+    _scoring_max_tokens,
+)
 from rlvr_demo.terminal_task_grpo import TerminalTaskTimeouts, _read_instruction
 
 
@@ -227,6 +236,21 @@ def _tool_specs() -> list[ToolSpec]:
 
 
 TOOL_SPECS = _tool_specs()
+
+
+@dataclass
+class DefaultAgentTurnRecord:
+    traj_i: int
+    turn_index: int
+    response_id: str
+    prefix_messages: list[dict[str, Any]]
+    assistant_message: dict[str, Any]
+
+
+@dataclass
+class DefaultAgentRunResult:
+    reward: float
+    turn_records: list[DefaultAgentTurnRecord]
 
 
 def _repair_json(value: str) -> str:
@@ -598,6 +622,7 @@ class DefaultAgentTerminalTaskRunner:
         trajectory_timeout: float | None = None,
         task_service_url: str | None = None,
         task_service_url_file: str | None = None,
+        return_turn_records: bool = False,
     ):
         self.output_path = output_path
         self.max_turns = max_turns
@@ -612,6 +637,7 @@ class DefaultAgentTerminalTaskRunner:
         self.task_service_url = task_service_url.rstrip("/") if task_service_url else None
         self.task_service_url_file = task_service_url_file
         self.remote_session_id: str | None = None
+        self.return_turn_records = return_turn_records
 
     def _remaining_trajectory_timeout(self, started_at: float) -> float | None:
         if self.trajectory_timeout is None:
@@ -882,7 +908,7 @@ class DefaultAgentTerminalTaskRunner:
         client: ArealOpenAI,
         uid: str,
         traj_i: int,
-    ) -> float | None:
+    ) -> float | DefaultAgentRunResult | None:
         task_name = str(data.get("task_name"))
         instruction = str(data.get("instruction") or "").strip()
         if not instruction:
@@ -905,6 +931,7 @@ class DefaultAgentTerminalTaskRunner:
         ]
         tools = [spec.api_definition() for spec in TOOL_SPECS]
         started_at = time.monotonic()
+        turn_records: list[DefaultAgentTurnRecord] = []
 
         try:
             async with atrace_scope(
@@ -922,6 +949,7 @@ class DefaultAgentTerminalTaskRunner:
             reward: float | None = 0.0
             for turn in range(self.max_turns):
                 self._assert_single_user_message(messages)
+                prefix_messages = deepcopy(messages)
                 try:
                     response = await self._await_with_trajectory_timeout(
                         client.chat.completions.create(
@@ -946,6 +974,16 @@ class DefaultAgentTerminalTaskRunner:
                     response=response,
                     client=client,
                 )
+                if self.return_turn_records:
+                    turn_records.append(
+                        DefaultAgentTurnRecord(
+                            traj_i=traj_i,
+                            turn_index=turn,
+                            response_id=str(response.id),
+                            prefix_messages=prefix_messages,
+                            assistant_message=deepcopy(assistant_message),
+                        )
+                    )
                 messages.append(assistant_message)
                 tool_calls = assistant_message.get("tool_calls") or []
                 if not tool_calls:
@@ -998,6 +1036,11 @@ class DefaultAgentTerminalTaskRunner:
                 f"Default-agent GRPO task {task_name} traj {traj_i} reward={float(reward):.4f}",
                 flush=True,
             )
+            if self.return_turn_records:
+                return DefaultAgentRunResult(
+                    reward=float(reward),
+                    turn_records=turn_records,
+                )
             return float(reward)
         except TimeoutError:
             print(
@@ -1124,9 +1167,587 @@ class DefaultAgentTerminalGRPOWorkflow(RolloutWorkflow):
         return completions_with_reward or None
 
 
+def _external_teacher_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only OpenAI-compatible chat fields for the external teacher API."""
+    normalized: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role") or "")
+        if role in {"system", "user"}:
+            normalized.append(
+                {
+                    "role": role,
+                    "content": str(message.get("content") or ""),
+                }
+            )
+            continue
+        if role == "assistant":
+            content, reasoning_content = _split_assistant_content_for_teacher(
+                str(message.get("content") or "")
+            )
+            raw_tool_calls = message.get("tool_calls") or []
+            if raw_tool_calls and content and reasoning_content is None:
+                reasoning_content = content
+                content = ""
+            out: dict[str, Any] = {
+                "role": "assistant",
+                "content": content,
+            }
+            if reasoning_content is not None:
+                out["reasoning_content"] = reasoning_content
+            tool_calls = []
+            for raw_tool_call in raw_tool_calls:
+                try:
+                    name, args, call_id = _tool_call_name_and_args(raw_tool_call)
+                except Exception:
+                    continue
+                tool_calls.append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                )
+            if tool_calls:
+                out["tool_calls"] = tool_calls
+            normalized.append(out)
+            continue
+        if role == "tool":
+            normalized.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(message.get("tool_call_id") or ""),
+                    "content": str(message.get("content") or ""),
+                }
+            )
+            continue
+    return normalized
+
+
+def _split_assistant_content_for_teacher(content: str) -> tuple[str, str | None]:
+    """Map Qwen visible thinking text into DeepSeek's reasoning_content field.
+
+    DeepSeek's v4 API rejects prior assistant messages that contain thinking text
+    in ``content`` without a corresponding ``reasoning_content`` field.  The
+    student history is therefore preserved, but represented with the field names
+    expected by the teacher API.
+    """
+    if "</think>" in content:
+        reasoning, normal = content.split("</think>", maxsplit=1)
+        reasoning = reasoning.split("<think>", maxsplit=1)[-1].strip("\n")
+        return normal.lstrip("\n"), reasoning
+    if "<think>" in content:
+        match = re.search(r"<think>(.*?)(?:</think>|$)", content, flags=re.DOTALL)
+        reasoning = match.group(1).strip("\n") if match else ""
+        normal = re.sub(r"<think>.*?(?:</think>|$)", "", content, flags=re.DOTALL)
+        return normal.lstrip("\n"), reasoning
+    return content, None
+
+
+def _format_qwen_tool_call_target(tool_calls: list[Any]) -> str:
+    targets: list[str] = []
+    for raw_tool_call in tool_calls:
+        name, args, _ = _tool_call_name_and_args(raw_tool_call)
+        if not name:
+            continue
+        targets.append(
+            '<tool_call>\n'
+            f"{json.dumps({'name': name, 'arguments': args}, ensure_ascii=False)}\n"
+            "</tool_call>"
+        )
+    return "\n".join(targets)
+
+
+def _teacher_tool_calls_from_message(message: dict[str, Any]) -> list[dict[str, Any]]:
+    tool_calls = list(message.get("tool_calls") or [])
+    if tool_calls:
+        return [_tool_call_dict(tool_call) for tool_call in tool_calls]
+
+    content = str(message.get("content") or "")
+    if not content:
+        return []
+    try:
+        parsed_tool_calls, _ = _parse_tagged_tool_calls(content)
+    except Exception:
+        return []
+    return parsed_tool_calls
+
+
+def _find_token_subsequence(tokens: list[int], pattern: list[int]) -> int | None:
+    if not pattern or len(pattern) > len(tokens):
+        return None
+    for start in range(len(tokens) - len(pattern) + 1):
+        if tokens[start : start + len(pattern)] == pattern:
+            return start
+    return None
+
+
+def _output_tokens_without_stop(interaction: Any) -> list[int]:
+    response = interaction.model_response
+    try:
+        return list(response.output_tokens_without_stop)
+    except Exception:
+        return list(response.output_tokens)
+
+
+def _student_reasoning_output_len(
+    tokenizer: PreTrainedTokenizerFast,
+    output_tokens: list[int],
+    assistant_message: dict[str, Any],
+) -> int:
+    tool_tag = tokenizer.encode("<tool_call>", add_special_tokens=False)
+    start = _find_token_subsequence(output_tokens, tool_tag)
+    if start is not None:
+        return start
+
+    output_text = tokenizer.decode(output_tokens, skip_special_tokens=False)
+    match = TOOL_CALL_RE.search(output_text)
+    if match is not None:
+        prefix_ids = tokenizer.encode(
+            output_text[: match.start()],
+            add_special_tokens=False,
+        )
+        return min(len(prefix_ids), len(output_tokens))
+
+    if assistant_message.get("tool_calls"):
+        content_ids = tokenizer.encode(
+            str(assistant_message.get("content") or ""),
+            add_special_tokens=False,
+        )
+        if output_tokens[: len(content_ids)] == content_ids:
+            return len(content_ids)
+
+    return len(output_tokens)
+
+
+def _metadata_tensor(ids: list[int], dtype: torch.dtype) -> torch.Tensor:
+    values = ids if ids else [0]
+    return torch.tensor(values, dtype=dtype).unsqueeze(0)
+
+
+def _build_teacher_turn_tensor(
+    *,
+    tokenizer: PreTrainedTokenizerFast,
+    interaction: Any,
+    turn_record: DefaultAgentTurnRecord,
+    verifier_reward: float,
+    teacher_target: str,
+) -> dict[str, torch.Tensor] | None:
+    response = interaction.model_response
+    if response is None:
+        return None
+    output_tokens = _output_tokens_without_stop(interaction)
+    reasoning_len = _student_reasoning_output_len(
+        tokenizer=tokenizer,
+        output_tokens=output_tokens,
+        assistant_message=turn_record.assistant_message,
+    )
+    reasoning_len = max(0, min(reasoning_len, len(output_tokens)))
+    if reasoning_len <= 0:
+        return None
+
+    seq = list(response.input_tokens) + output_tokens[:reasoning_len]
+    output_logprobs = list(response.output_logprobs)[:reasoning_len]
+    output_versions = list(response.output_versions)[:reasoning_len]
+    logprobs = [0.0] * len(response.input_tokens) + output_logprobs
+    versions = [-1] * len(response.input_tokens) + output_versions
+    loss_mask = [0] * len(response.input_tokens) + [1] * reasoning_len
+    answer_ids = tokenizer.encode(teacher_target, add_special_tokens=False)
+    answer_mask = [1] * len(answer_ids) if answer_ids else []
+
+    return {
+        "input_ids": torch.tensor(seq, dtype=torch.int32).unsqueeze(0),
+        "loss_mask": torch.tensor(loss_mask, dtype=torch.int32).unsqueeze(0),
+        "logprobs": torch.tensor(logprobs, dtype=torch.float32).unsqueeze(0),
+        "versions": torch.tensor(versions, dtype=torch.int32).unsqueeze(0),
+        "attention_mask": torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
+        "rewards": torch.tensor([float(verifier_reward)], dtype=torch.float32),
+        "verifier_rewards": torch.tensor([float(verifier_reward)], dtype=torch.float32),
+        "teacher_answer_prefix_ids": _metadata_tensor([], torch.int32),
+        "teacher_answer_prefix_mask": _metadata_tensor([], torch.bool),
+        "teacher_answer_ids": _metadata_tensor(answer_ids, torch.int32),
+        "teacher_answer_mask": _metadata_tensor(answer_mask, torch.bool),
+        "teacher_context_mask": torch.ones(len(seq), dtype=torch.bool).unsqueeze(0),
+        "teacher_answer_turn_index": torch.tensor(
+            [int(turn_record.turn_index)],
+            dtype=torch.int32,
+        ),
+        "teacher_answer_traj_index": torch.tensor(
+            [int(turn_record.traj_i)],
+            dtype=torch.int32,
+        ),
+    }
+
+
+class DefaultAgentTerminalTeacherAnswerRLWorkflow(RolloutWorkflow):
+    """Student rollouts plus per-turn online teacher-answer rewards.
+
+    Student trajectories are generated with the same default-agent harness as
+    GRPO.  After rollout, DeepSeek is asked for the next tool call from each
+    student prefix.  The training sample for that turn is truncated to the
+    student's current reasoning prefix, and the teacher tool call is scored in
+    the postprocess hook.
+    """
+
+    def __init__(
+        self,
+        gconfig: GenerationHyperparameters,
+        tokenizer: PreTrainedTokenizerFast,
+        dump_dir: str | None = None,
+        rollout_stat_scope: str = "rollout",
+        n_trajs: int = 1,
+        max_turns: int = 25,
+        max_tokens_per_trajectory: int = 32768,
+        max_workers: int = 16,
+        observation_max_chars: int = 8000,
+        turn_discount: float = 1.0,
+        task_timeouts: TerminalTaskTimeouts | None = None,
+        filter_uniform_reward: bool = False,
+        encourage_completion_reward: bool = False,
+        terminal_task_service_url: str | None = None,
+        terminal_task_service_url_file: str | None = None,
+        tool_call_parser: str = "qwen3_xml",
+        reasoning_parser: str = "qwen3",
+        chat_template_type: str = "concat",
+        export_style: str = "concat",
+        trajectory_timeout: float | None = None,
+        teacher_answer_model: str = "deepseek-v4-pro",
+        teacher_answer_base_url: str | None = None,
+        teacher_answer_api_key_env: str = "DEEPSEEK_API_KEY",
+        teacher_answer_max_tokens: int = 1024,
+        teacher_answer_temperature: float = 0.0,
+        teacher_answer_top_p: float = 1.0,
+        teacher_answer_timeout: float = 120.0,
+        teacher_answer_max_retries: int = 3,
+        teacher_answer_concurrency: int = 32,
+    ):
+        del rollout_stat_scope, turn_discount, export_style
+        self.gconfig = gconfig
+        self.gconfig.n_samples = 1
+        self.tokenizer = tokenizer
+        self.dump_dir = dump_dir or "default_agent_terminal_teacher_answer_rl_generated"
+        Path(self.dump_dir).mkdir(parents=True, exist_ok=True)
+        self.n_trajs = n_trajs
+        self.max_turns = max_turns
+        self.max_tokens_per_trajectory = max_tokens_per_trajectory
+        self.max_workers = max_workers
+        self.observation_max_chars = observation_max_chars
+        self.task_timeouts = task_timeouts or TerminalTaskTimeouts()
+        self.filter_uniform_reward = filter_uniform_reward
+        self.encourage_completion_reward = encourage_completion_reward
+        self.terminal_task_service_url = terminal_task_service_url
+        self.terminal_task_service_url_file = terminal_task_service_url_file
+        self.tool_call_parser = tool_call_parser
+        self.reasoning_parser = reasoning_parser
+        self.chat_template_type = chat_template_type
+        self.trajectory_timeout = trajectory_timeout
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+
+        self.teacher_answer_model = teacher_answer_model
+        self.teacher_answer_base_url = teacher_answer_base_url
+        self.teacher_answer_api_key_env = teacher_answer_api_key_env
+        self.teacher_answer_max_tokens = teacher_answer_max_tokens
+        self.teacher_answer_temperature = teacher_answer_temperature
+        self.teacher_answer_top_p = teacher_answer_top_p
+        self.teacher_answer_timeout = teacher_answer_timeout
+        self.teacher_answer_max_retries = teacher_answer_max_retries
+        self.teacher_answer_semaphore = asyncio.Semaphore(
+            max(1, teacher_answer_concurrency)
+        )
+        self._teacher_client: AsyncOpenAI | None = None
+
+    def _get_teacher_client(self) -> AsyncOpenAI:
+        if self._teacher_client is not None:
+            return self._teacher_client
+        api_key = os.environ.get(self.teacher_answer_api_key_env)
+        if not api_key:
+            raise RuntimeError(
+                f"{self.teacher_answer_api_key_env} is not set for DeepSeek teacher calls"
+            )
+        base_url = (
+            self.teacher_answer_base_url
+            or os.environ.get("DEEPSEEK_BASE_URL")
+            or os.environ.get("DEEPSEEK_API_BASE")
+            or "https://api.deepseek.com"
+        )
+        self._teacher_client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=self.teacher_answer_timeout,
+            max_retries=max(0, int(self.teacher_answer_max_retries)),
+        )
+        return self._teacher_client
+
+    async def _teacher_tool_target(
+        self,
+        turn_record: DefaultAgentTurnRecord,
+    ) -> str:
+        messages = _external_teacher_messages(turn_record.prefix_messages)
+        async with self.teacher_answer_semaphore:
+            response = await self._get_teacher_client().chat.completions.create(
+                model=self.teacher_answer_model,
+                messages=messages,
+                tools=[spec.api_definition() for spec in TOOL_SPECS],
+                tool_choice="auto",
+                max_tokens=self.teacher_answer_max_tokens,
+                temperature=self.teacher_answer_temperature,
+                top_p=self.teacher_answer_top_p,
+            )
+        message = response.choices[0].message.model_dump(exclude_none=True)
+        return _format_qwen_tool_call_target(_teacher_tool_calls_from_message(message))
+
+    async def _teacher_targets(
+        self,
+        turn_records: list[DefaultAgentTurnRecord],
+    ) -> list[str]:
+        results = await asyncio.gather(
+            *[self._teacher_tool_target(record) for record in turn_records],
+            return_exceptions=True,
+        )
+        targets: list[str] = []
+        for record, result in zip(turn_records, results):
+            if isinstance(result, Exception):
+                print(
+                    "DeepSeek teacher target failed for "
+                    f"traj {record.traj_i} turn {record.turn_index}: {result}",
+                    flush=True,
+                )
+                targets.append("")
+            else:
+                targets.append(str(result))
+        return targets
+
+    async def arun_episode(self, engine, data):
+        clients = [
+            ArealOpenAI(
+                engine=engine,
+                tokenizer=self.tokenizer,
+                tool_call_parser=self.tool_call_parser,
+                reasoning_parser=self.reasoning_parser,
+                engine_max_tokens=self.max_tokens_per_trajectory,
+                chat_template_type=self.chat_template_type,
+            )
+            for _ in range(self.n_trajs)
+        ]
+        uids = [uuid.uuid4().hex[:8] for _ in range(self.n_trajs)]
+        raw_results = await asyncio.gather(
+            *[
+                DefaultAgentTerminalTaskRunner(
+                    output_path=os.path.join(
+                        self.dump_dir, "DefaultAgentTerminalTaskRunner"
+                    ),
+                    max_turns=self.max_turns,
+                    max_tokens_per_turn=self.gconfig.max_new_tokens,
+                    temperature=self.gconfig.temperature,
+                    top_p=self.gconfig.top_p,
+                    observation_max_chars=self.observation_max_chars,
+                    task_timeouts=self.task_timeouts,
+                    encourage_completion_reward=self.encourage_completion_reward,
+                    executor=self.executor,
+                    trajectory_timeout=self.trajectory_timeout,
+                    task_service_url=self.terminal_task_service_url,
+                    task_service_url_file=self.terminal_task_service_url_file,
+                    return_turn_records=True,
+                ).run_agent(data=data, client=clients[i], uid=uids[i], traj_i=i)
+                for i in range(self.n_trajs)
+            ]
+        )
+
+        results: list[DefaultAgentRunResult | None] = []
+        rewards: list[float | None] = []
+        for result in raw_results:
+            if isinstance(result, DefaultAgentRunResult):
+                results.append(result)
+                rewards.append(result.reward)
+            elif isinstance(result, (float, int)):
+                results.append(None)
+                rewards.append(float(result))
+            else:
+                results.append(None)
+                rewards.append(None)
+
+        if self.filter_uniform_reward:
+            valid_rewards = [reward for reward in rewards if reward is not None]
+            if not valid_rewards or all(reward == valid_rewards[0] for reward in valid_rewards):
+                return None
+
+        turn_records: list[DefaultAgentTurnRecord] = []
+        record_rewards: list[float] = []
+        for result in results:
+            if result is None:
+                continue
+            for turn_record in result.turn_records:
+                turn_records.append(turn_record)
+                record_rewards.append(float(result.reward))
+
+        if not turn_records:
+            stats_tracker.get(workflow_context.stat_scope()).scalar(
+                num_trajectories_failed=sum(1 for reward in rewards if reward is None)
+            )
+            return None
+
+        teacher_targets = await self._teacher_targets(turn_records)
+        rows: list[dict[str, torch.Tensor]] = []
+        for turn_record, verifier_reward, teacher_target in zip(
+            turn_records,
+            record_rewards,
+            teacher_targets,
+        ):
+            interaction = clients[turn_record.traj_i].get_interaction(
+                turn_record.response_id
+            )
+            if interaction is None:
+                continue
+            row = _build_teacher_turn_tensor(
+                tokenizer=self.tokenizer,
+                interaction=interaction,
+                turn_record=turn_record,
+                verifier_reward=verifier_reward,
+                teacher_target=teacher_target,
+            )
+            if row is not None:
+                rows.append(row)
+
+        valid_rewards = [reward for reward in rewards if reward is not None]
+        for reward in valid_rewards:
+            stats_tracker.get(workflow_context.stat_scope()).scalar(reward=float(reward))
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            num_full_passes=sum(1 for reward in rewards if reward == 1.0)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            num_trajectories_failed=sum(1 for reward in rewards if reward is None)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_answer_turns=len(rows),
+            teacher_answer_targets=sum(1 for target in teacher_targets if target),
+        )
+        return concat_padded_tensors(rows) if rows else None
+
+
+def _config_float(config: Any, key: str, env_key: str, default: float) -> float:
+    value = getattr(config, key, None)
+    if value is None:
+        value = os.environ.get(env_key)
+    if value is None or str(value).strip() == "":
+        return default
+    return float(value)
+
+
+def default_agent_teacher_answer_reward_postprocess(
+    trainer,
+    rollout_batch: list[dict[str, Any]],
+    global_step: int,
+) -> None:
+    """Combine verifier rewards with per-turn teacher-answer likelihood rewards."""
+    del global_step
+    teacher_weight = _config_float(
+        trainer.config,
+        "teacher_answer_reward_weight",
+        "TEACHER_ANSWER_REWARD_WEIGHT",
+        1.0,
+    )
+    verifier_weight = _config_float(
+        trainer.config,
+        "verifier_reward_weight",
+        "VERIFIER_REWARD_WEIGHT",
+        1.0,
+    )
+
+    scoring_outputs = [
+        _build_scoring_batch(traj, max_tokens=_scoring_max_tokens(trainer))
+        for traj in rollout_batch
+    ]
+    scoring_batches = [batch for batch, _ in scoring_outputs]
+    scoring_stats = [stats for _, stats in scoring_outputs]
+    scoring_logps = trainer.actor.compute_logp(scoring_batches)
+    if scoring_logps is None:
+        raise RuntimeError("actor.compute_logp returned None for teacher-answer scoring")
+
+    all_teacher_logp: list[torch.Tensor] = []
+    all_combined: list[torch.Tensor] = []
+    all_verifier: list[torch.Tensor] = []
+    all_target_available: list[torch.Tensor] = []
+    all_target_len: list[torch.Tensor] = []
+    all_scoring_len: list[torch.Tensor] = []
+    for traj, scoring_batch, scoring_stat, logp in zip(
+        rollout_batch,
+        scoring_batches,
+        scoring_stats,
+        scoring_logps,
+    ):
+        logp = _as_tensor(logp)
+        answer_mask = torch.roll(
+            scoring_batch["loss_mask"].to(logp.device).float(),
+            shifts=-1,
+            dims=-1,
+        )
+        target_len = answer_mask.sum(dim=-1)
+        target_available = (target_len > 0).float()
+        teacher_logp = (logp * answer_mask).sum(dim=-1) / target_len.clamp(min=1.0)
+        teacher_logp = teacher_logp * target_available
+        verifier_rewards = _as_tensor(
+            traj.get("verifier_rewards", traj["rewards"])
+        ).to(logp.device).float()
+        combined_rewards = verifier_weight * verifier_rewards + teacher_weight * teacher_logp
+        traj["rewards"] = combined_rewards.to(dtype=torch.float32)
+
+        all_teacher_logp.append(teacher_logp.detach().float().cpu())
+        all_combined.append(combined_rewards.detach().float().cpu())
+        all_verifier.append(verifier_rewards.detach().float().cpu())
+        all_target_available.append(target_available.detach().float().cpu())
+        all_target_len.append(target_len.detach().float().cpu())
+        all_scoring_len.append(scoring_stat["length"].detach().float().cpu())
+
+        for key in (
+            "teacher_answer_prefix_ids",
+            "teacher_answer_prefix_mask",
+            "teacher_answer_ids",
+            "teacher_answer_mask",
+            "teacher_context_mask",
+            "teacher_answer_turn_index",
+            "teacher_answer_traj_index",
+            "verifier_rewards",
+        ):
+            traj.pop(key, None)
+
+    teacher_logp_cat = torch.cat(all_teacher_logp)
+    combined_cat = torch.cat(all_combined)
+    verifier_cat = torch.cat(all_verifier)
+    target_available_cat = torch.cat(all_target_available)
+    target_len_cat = torch.cat(all_target_len)
+    scoring_len_cat = torch.cat(all_scoring_len)
+    stats_tracker.denominator(
+        default_teacher_answer_n_turns=torch.ones_like(
+            combined_cat,
+            dtype=torch.bool,
+        ),
+        default_teacher_answer_n_targets=target_available_cat.bool(),
+    )
+    stats_tracker.stat(
+        default_teacher_answer_logp=teacher_logp_cat,
+        default_teacher_answer_reward=combined_cat,
+        default_teacher_answer_verifier_reward=verifier_cat,
+        default_teacher_answer_target_available=target_available_cat,
+        default_teacher_answer_target_len=target_len_cat,
+        default_teacher_answer_scoring_len=scoring_len_cat,
+        denominator="default_teacher_answer_n_turns",
+    )
+    stats_tracker.stat(
+        default_teacher_answer_target_logp=teacher_logp_cat,
+        default_teacher_answer_target_len_only=target_len_cat,
+        denominator="default_teacher_answer_n_targets",
+    )
+
+
 __all__ = [
     "DefaultAgentTerminalGRPOWorkflow",
+    "DefaultAgentTerminalTeacherAnswerRLWorkflow",
     "DefaultAgentTerminalTaskRunner",
+    "default_agent_teacher_answer_reward_postprocess",
     "SYSTEM_PROMPT",
     "TOOL_SPECS",
 ]

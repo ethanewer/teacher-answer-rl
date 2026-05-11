@@ -59,7 +59,13 @@ def main(args: list[str]) -> None:
         dump_dir=os.path.join(StatsLogger.get_log_path(config.stats_logger), "generated"),
     )
     if config.agent_harness == "default":
-        workflow = "rlvr_demo.default_agent_terminal_grpo.DefaultAgentTerminalGRPOWorkflow"
+        if config.teacher_answer_reward:
+            workflow = (
+                "rlvr_demo.default_agent_terminal_grpo."
+                "DefaultAgentTerminalTeacherAnswerRLWorkflow"
+            )
+        else:
+            workflow = "rlvr_demo.default_agent_terminal_grpo.DefaultAgentTerminalGRPOWorkflow"
         workflow_kwargs = {
             **common_workflow_kwargs,
             "tool_call_parser": config.tool_call_parser,
@@ -68,6 +74,20 @@ def main(args: list[str]) -> None:
             "export_style": config.export_style,
             "trajectory_timeout": config.trajectory_timeout,
         }
+        if config.teacher_answer_reward:
+            workflow_kwargs.update(
+                {
+                    "teacher_answer_model": config.teacher_answer_model,
+                    "teacher_answer_base_url": config.teacher_answer_base_url,
+                    "teacher_answer_api_key_env": config.teacher_answer_api_key_env,
+                    "teacher_answer_max_tokens": config.teacher_answer_max_tokens,
+                    "teacher_answer_temperature": config.teacher_answer_temperature,
+                    "teacher_answer_top_p": config.teacher_answer_top_p,
+                    "teacher_answer_timeout": config.teacher_answer_timeout,
+                    "teacher_answer_max_retries": config.teacher_answer_max_retries,
+                    "teacher_answer_concurrency": config.teacher_answer_concurrency,
+                }
+            )
     elif config.agent_harness == "terminus":
         workflow = "rlvr_demo.terminal_task_grpo.TerminusTerminalGRPOWorkflow"
         workflow_kwargs = {
@@ -93,6 +113,12 @@ def main(args: list[str]) -> None:
             workflow_kwargs=workflow_kwargs,
             eval_workflow=workflow,
             eval_workflow_kwargs=eval_workflow_kwargs,
+            rollout_postprocess_fn=(
+                "rlvr_demo.default_agent_terminal_grpo."
+                "default_agent_teacher_answer_reward_postprocess"
+                if config.teacher_answer_reward
+                else None
+            ),
         )
 
 
