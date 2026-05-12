@@ -83,6 +83,7 @@ DEFAULT_TBENCH_TASK_CACHE = Path(
     "/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/"
     "materialized_tbench_tasks"
 )
+TBENCH_TASK_LAYOUT_VERSION = "2"
 
 
 def _link_or_copy_file(src: Path, dst: Path) -> None:
@@ -168,6 +169,7 @@ def _write_docker_compose(out_path: Path) -> None:
       dockerfile: Dockerfile
     image: ${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}
     container_name: ${T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME}
+    network_mode: bridge
     working_dir: /app
     command: tail -f /dev/null
     volumes:
@@ -201,14 +203,25 @@ def ensure_terminal_bench_task_layout(task_dir: Path) -> Path:
     task_hash = uuid.uuid5(uuid.NAMESPACE_URL, str(task_dir)).hex[:12]
     materialized = cache_root / f"{task_dir.name}-{task_hash}"
     marker = materialized / ".terminal_bench_layout_ready"
-    if marker.exists():
+    compose_path = materialized / "docker-compose.yaml"
+    if (
+        marker.exists()
+        and marker.read_text(encoding="utf-8").splitlines()[:1] == [TBENCH_TASK_LAYOUT_VERSION]
+        and compose_path.exists()
+        and "network_mode: bridge" in compose_path.read_text(encoding="utf-8")
+    ):
         return materialized
 
     cache_root.mkdir(parents=True, exist_ok=True)
     lock_path = cache_root / f"{materialized.name}.lock"
     with lock_path.open("w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if marker.exists():
+        if (
+            marker.exists()
+            and marker.read_text(encoding="utf-8").splitlines()[:1] == [TBENCH_TASK_LAYOUT_VERSION]
+            and compose_path.exists()
+            and "network_mode: bridge" in compose_path.read_text(encoding="utf-8")
+        ):
             return materialized
         materialized.mkdir(parents=True, exist_ok=True)
         task_toml = tomllib.loads(task_toml_path.read_text(encoding="utf-8"))
@@ -220,9 +233,9 @@ def ensure_terminal_bench_task_layout(task_dir: Path) -> Path:
         _link_or_copy_file(run_tests, materialized / "run-tests.sh")
         mode = (materialized / "run-tests.sh").stat().st_mode
         (materialized / "run-tests.sh").chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        _write_docker_compose(materialized / "docker-compose.yaml")
+        _write_docker_compose(compose_path)
         _write_task_yaml(task_dir, materialized / "task.yaml", task_toml)
-        marker.write_text(str(task_dir) + "\n", encoding="utf-8")
+        marker.write_text(f"{TBENCH_TASK_LAYOUT_VERSION}\n{task_dir}\n", encoding="utf-8")
     return materialized
 
 
