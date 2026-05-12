@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import csv
 import json
 import os
@@ -924,7 +925,9 @@ class TerminusToolTerminalTaskRunner:
 
         output_path = Path(self.output_path).resolve()
         output_path.mkdir(parents=True, exist_ok=True)
-        task_dir = Path(str(data["task_path"])).resolve()
+        from terminal_agent_demo.terminal_task_grpo import ensure_terminal_bench_task_layout
+
+        task_dir = ensure_terminal_bench_task_layout(Path(str(data["task_path"])))
         self.task_name = str(data["task_name"])
         self.trial_handler = TrialHandler(
             trial_name=f"{self.task_name}.{uid}.terminus-tool-grpo",
@@ -1176,7 +1179,10 @@ class TerminusToolTerminalGRPOWorkflow(RolloutWorkflow):
     ) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
-        self.gconfig = gconfig
+        # AReaL's trainer uses config.gconfig.n_samples as the GRPO group size.
+        # Keep that shared config intact and use a private one-sample generation
+        # config inside each grouped rollout worker.
+        self.gconfig = gconfig.new(n_samples=1) if hasattr(gconfig, "new") else copy.copy(gconfig)
         self.gconfig.n_samples = 1
         self.tokenizer = tokenizer
         self.dump_dir = dump_dir or "terminus_tool_grpo_generated"

@@ -19,11 +19,17 @@ The final reward is the task verifier pass ratio, propagated back across turns.
 from __future__ import annotations
 
 import asyncio
+import copy
 import csv
 import datetime as _datetime
+import fcntl
 import json
 import os
 import random
+import shutil
+import stat
+import textwrap
+import tomllib
 import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -71,6 +77,153 @@ Brief private reasoning about the terminal state and next action.
 Use commands to inspect and modify the environment. Set task_complete to true only
 when the task is finished. Do not use markdown fences around the JSON.
 """
+
+
+DEFAULT_TBENCH_TASK_CACHE = Path(
+    "/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/"
+    "materialized_tbench_tasks"
+)
+
+
+def _link_or_copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        dst.unlink()
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def _link_or_copy_tree(src: Path, dst: Path) -> None:
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target = dst / item.name
+        if item.is_dir():
+            _link_or_copy_tree(item, target)
+        elif item.is_file():
+            _link_or_copy_file(item, target)
+
+
+def _yaml_block(value: str, indent: int = 2) -> str:
+    return "|\n" + textwrap.indent(value.rstrip() + "\n", " " * indent)
+
+
+def _task_difficulty(task_dir: Path) -> str:
+    for part in task_dir.parts:
+        if part in {"easy", "medium", "hard"}:
+            return part
+    return "medium"
+
+
+def _task_category(task_dir: Path, tags: list[str]) -> str:
+    for tag in tags:
+        if tag != "datagen-flash":
+            return tag
+    if len(task_dir.parts) >= 2:
+        return task_dir.parent.name
+    return "terminal"
+
+
+def _write_task_yaml(task_dir: Path, out_path: Path, task_toml: dict[str, Any]) -> None:
+    instruction = _read_instruction(task_dir)
+    metadata = task_toml.get("metadata") if isinstance(task_toml.get("metadata"), dict) else {}
+    tags = [str(tag) for tag in metadata.get("tags", [])] if isinstance(metadata.get("tags"), list) else []
+    verifier = task_toml.get("verifier") if isinstance(task_toml.get("verifier"), dict) else {}
+    agent = task_toml.get("agent") if isinstance(task_toml.get("agent"), dict) else {}
+    max_agent_timeout = int(float(agent.get("timeout_sec", 900.0)))
+    max_test_timeout = int(float(verifier.get("timeout_sec", 900.0)))
+    category = _task_category(task_dir, tags)
+    difficulty = _task_difficulty(task_dir)
+    tag_lines = "\n".join(f"  - {tag}" for tag in tags) if tags else "  - synthetic"
+    out_path.write_text(
+        "\n".join(
+            [
+                f"instruction: {_yaml_block(instruction)}",
+                f"difficulty: {difficulty}",
+                f"category: {category}",
+                "tags:",
+                tag_lines,
+                "parser_name: pytest",
+                f"max_agent_timeout_sec: {max_agent_timeout}",
+                f"max_test_timeout_sec: {max_test_timeout}",
+                "run_tests_in_same_shell: false",
+                "disable_asciinema: true",
+                f"estimated_duration_sec: {max_agent_timeout}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_docker_compose(out_path: Path) -> None:
+    out_path.write_text(
+        """services:
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}
+    container_name: ${T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME}
+    working_dir: /app
+    command: tail -f /dev/null
+    volumes:
+      - ${T_BENCH_TASK_LOGS_PATH}:${T_BENCH_CONTAINER_LOGS_PATH}
+      - ${T_BENCH_TASK_AGENT_LOGS_PATH}:${T_BENCH_CONTAINER_AGENT_LOGS_PATH}
+""",
+        encoding="utf-8",
+    )
+
+
+def ensure_terminal_bench_task_layout(task_dir: Path) -> Path:
+    """Return a Terminal-Bench-compatible task directory.
+
+    Nemotron-Terminal-Synthetic-Tasks stores executable tasks as
+    ``task.toml`` + ``environment/Dockerfile`` + ``tests/test.sh``. The
+    Terminal-Bench runner used by GRPO expects ``task.yaml``, a top-level
+    Dockerfile/docker-compose pair, ``run-tests.sh``, and ``tests/``. This
+    helper materializes a compatible hardlink/copy cache lazily per task.
+    """
+    task_dir = task_dir.resolve()
+    if (task_dir / "task.yaml").exists():
+        return task_dir
+    task_toml_path = task_dir / "task.toml"
+    dockerfile = task_dir / "environment" / "Dockerfile"
+    tests_dir = task_dir / "tests"
+    run_tests = tests_dir / "test.sh"
+    if not (task_toml_path.exists() and dockerfile.exists() and tests_dir.exists() and run_tests.exists()):
+        return task_dir
+
+    cache_root = Path(os.environ.get("TERMINAL_AGENT_TBENCH_TASK_CACHE", str(DEFAULT_TBENCH_TASK_CACHE)))
+    task_hash = uuid.uuid5(uuid.NAMESPACE_URL, str(task_dir)).hex[:12]
+    materialized = cache_root / f"{task_dir.name}-{task_hash}"
+    marker = materialized / ".terminal_bench_layout_ready"
+    if marker.exists():
+        return materialized
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    lock_path = cache_root / f"{materialized.name}.lock"
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if marker.exists():
+            return materialized
+        materialized.mkdir(parents=True, exist_ok=True)
+        task_toml = tomllib.loads(task_toml_path.read_text(encoding="utf-8"))
+        _link_or_copy_file(task_dir / "instruction.md", materialized / "instruction.md")
+        _link_or_copy_file(dockerfile, materialized / "Dockerfile")
+        if (task_dir / "environment" / "files").exists():
+            _link_or_copy_tree(task_dir / "environment" / "files", materialized / "files")
+        _link_or_copy_tree(tests_dir, materialized / "tests")
+        _link_or_copy_file(run_tests, materialized / "run-tests.sh")
+        mode = (materialized / "run-tests.sh").stat().st_mode
+        (materialized / "run-tests.sh").chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        _write_docker_compose(materialized / "docker-compose.yaml")
+        _write_task_yaml(task_dir, materialized / "task.yaml", task_toml)
+        marker.write_text(str(task_dir) + "\n", encoding="utf-8")
+    return materialized
 
 
 @dataclass
@@ -262,7 +415,7 @@ class TerminusTerminalTaskRunner:
     def _reset_env(self, data: dict[str, Any], uid: str) -> None:
         output_path = Path(self.output_path).resolve()
         output_path.mkdir(parents=True, exist_ok=True)
-        task_dir = Path(str(data["task_path"])).resolve()
+        task_dir = ensure_terminal_bench_task_layout(Path(str(data["task_path"])))
         self.task_name = str(data["task_name"])
         self.trial_handler = TrialHandler(
             trial_name=f"{self.task_name}.{uid}.terminus-grpo",
@@ -473,7 +626,10 @@ class TerminusTerminalGRPOWorkflow(RolloutWorkflow):
         filter_uniform_reward: bool = False,
         encourage_completion_reward: bool = False,
     ):
-        self.gconfig = gconfig
+        # AReaL's trainer uses config.gconfig.n_samples as the GRPO group size.
+        # Keep that shared config intact and use a private one-sample generation
+        # config inside each grouped rollout worker.
+        self.gconfig = gconfig.new(n_samples=1) if hasattr(gconfig, "new") else copy.copy(gconfig)
         self.gconfig.n_samples = 1
         self.tokenizer = tokenizer
         self.dump_dir = dump_dir or "terminal_grpo_generated"
@@ -496,7 +652,7 @@ class TerminusTerminalGRPOWorkflow(RolloutWorkflow):
                 engine=engine,
                 tokenizer=self.tokenizer,
                 reasoning_parser="qwen3",
-                engine_max_tokens=self.gconfig.max_new_tokens,
+                engine_max_tokens=self.max_tokens_per_trajectory,
                 chat_template_type="hf",
             )
             for _ in range(self.n_trajs)

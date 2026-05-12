@@ -11,7 +11,8 @@ depend on the older experiment folder.
   conversion CLI, Qwen chat-template check, DeepSeek smoke runner, and
   Harbor-compatible agent.
 - `terminal_agent_data.py`: loaders for converted Terminus tool-calling JSONL.
-- `terminal_task_grpo.py`: shared task-manifest loader and GRPO config dataclass.
+- `terminal_task_grpo.py`: shared task-manifest loader, synthetic-task
+  materializer, and GRPO config dataclass.
 - `sft/`: converted-data SFT recipe and training entry point.
 - `teacher_answer_rl/`: converted-data teacher-answer-RL recipe, workflow, reward
   postprocess, and training entry point.
@@ -19,7 +20,7 @@ depend on the older experiment folder.
 - `eval/`: vLLM serve script and Harbor/Terminal-Bench evaluation recipes.
 - `scripts/`: shared H200 environment setup, corpus conversion, and Qwen template
   checks.
-- `RUNTIME_SMOKE_STATUS.md`: latest runtime smoke status and known GRPO blocker.
+- `RUNTIME_SMOKE_STATUS.md`: latest runtime smoke status.
 
 ## Harness
 
@@ -124,8 +125,8 @@ terminal_agent_demo/grpo/run.sh
 ```
 
 This is a Docker-backed Terminal-Bench smoke recipe using the same
-`execute_commands` harness. It has not yet completed an actor update in smoke;
-see `RUNTIME_SMOKE_STATUS.md` for the current GRPO blocker.
+`execute_commands` harness. The matched synthetic-task smoke has completed a
+full rollout plus actor update; see `RUNTIME_SMOKE_STATUS.md`.
 
 ## Real Medium Even-Row Runs
 
@@ -163,6 +164,40 @@ terminal_agent_demo/teacher_answer_rl/run_even_medium_real.sbatch
 SFT trains one full converted trajectory per example. Teacher-answer-RL is
 turn-level: the same even-row trajectories are expanded into assistant-turn
 prompts, so one epoch is expected to take much longer than SFT.
+
+Matched medium GRPO:
+
+```bash
+terminal_agent_demo/grpo/prepare_matched_medium_tasks.sh
+terminal_agent_demo/grpo/run_even_medium_real.sh
+```
+
+The GRPO recipe uses `nvidia/Nemotron-Terminal-Synthetic-Tasks` instead of the
+converted corpus trajectories for environment execution. The preparation script
+intersects the synthetic task manifest with the `source_task` IDs used by the
+current even-row SFT recipe, so GRPO trains on executable tasks drawn from the
+same source split as SFT and teacher-answer-RL. Synthetic task directories are
+materialized lazily into Terminal-Bench-compatible task directories under:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/materialized_tbench_tasks/
+```
+
+The real GRPO config uses 16 prompts/update, 4 completions/prompt, 64
+Docker-backed terminal rollouts/update, 32k context, 1024 max new tokens per
+turn, 25 max turns, 2 actor GPUs, and 6 rollout GPUs. The confirmed local smoke
+used the same path at smaller scale and completed `ppo_actor/update_successful =
+1` with zero failed trajectories. Scaling the smoke token count to the real
+batch gives roughly 0.87M update tokens when task lengths are similar.
+
+Individual real GRPO files:
+
+```text
+terminal_agent_demo/grpo/config_even_medium_real.yaml
+terminal_agent_demo/grpo/run_even_medium_real.sh
+terminal_agent_demo/grpo/prepare_matched_tasks.py
+terminal_agent_demo/grpo/prepare_matched_medium_tasks.sh
+```
 
 Terminal-Bench evaluation:
 
