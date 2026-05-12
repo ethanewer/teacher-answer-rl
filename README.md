@@ -35,7 +35,7 @@ That directory is self-contained. It includes:
 - `sft/`: SFT recipe for converted Terminus trajectories.
 - `teacher_answer_rl/`: teacher-answer-RL recipe using DeepSeek teacher
   continuations.
-- `grpo/`: GRPO terminal rollout recipe.
+- `grpo/`: GRPO terminal rollout recipes, including matched synthetic-task GRPO.
 - `eval/`: Harbor / Terminal-Bench evaluation launchers.
 - `scripts/`: environment setup, corpus conversion, template checks, and smoke
   checks.
@@ -110,6 +110,8 @@ AReaL/terminal_agent_demo/sft/config_even_medium_real.yaml
 AReaL/terminal_agent_demo/sft/run_even_medium_real.sbatch
 AReaL/terminal_agent_demo/teacher_answer_rl/config_even_medium_real.yaml
 AReaL/terminal_agent_demo/teacher_answer_rl/run_even_medium_real.sbatch
+AReaL/terminal_agent_demo/grpo/config_even_medium_real.yaml
+AReaL/terminal_agent_demo/grpo/run_even_medium_real.sh
 ```
 
 The SFT recipe trains full converted trajectories with sequence packing at 32k
@@ -117,6 +119,14 @@ context and about 0.5M-0.7M tokens per update. The teacher-answer-RL recipe is a
 turn-level method: it uses the same even-row trajectories, expands them into
 assistant-turn prompts, samples 32 prompts with 2 completions per prompt, and
 uses Terminal-Bench-style GRPO settings with 32k context.
+
+The real GRPO recipe uses `nvidia/Nemotron-Terminal-Synthetic-Tasks`, intersected
+with the same even-row source task IDs used by SFT and teacher-answer-RL. It
+runs 16 prompts/update with 4 completions/prompt, for 64 Docker-backed terminal
+rollouts/update, 32k context, 1024 max new tokens per turn, and a 2 actor GPU /
+6 rollout GPU split on one 8-GPU H200 node. Synthetic task directories are
+materialized lazily into Terminal-Bench-compatible task directories under the
+run fileroot.
 
 Runtime metrics are written under:
 
@@ -144,5 +154,5 @@ As of the latest update:
 - SFT completed one AReaL train step.
 - Teacher-answer-RL completed one rollout/scoring/update step at 32k context.
 - Terminal-Bench eval passed one easy task using the tool-calling harness.
-- GRPO reached terminal rollouts but still needs a follow-up fix for actor
-  data-parallel batch sizing before it is considered confirmed.
+- Matched synthetic-task GRPO completed one local rollout/update step with zero
+  failed trajectories and `ppo_actor/update_successful = 1`.
