@@ -24,3 +24,10 @@ logs/
 .cache/
 hf_cache/
 triton/
+
+terminal_synthetic_tasks*
+.vscode*
+containers*
+terminal_bench_datasets*
+harbor_datasets*
+AReaL/.venv-megatron
