@@ -1,0 +1,128 @@
+experiment_name: qwen3-4b-thinking-terminus-tool-sft-medium-converted-trajectory32768-h200
+trial_name: trial0
+
+seed: 7
+enable_offload: false
+total_train_epochs: 1
+total_train_steps: null
+tokenizer_path: ${actor.path}
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 8
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  name_resolve:
+    type: nfs
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/name_resolve
+
+scheduler:
+  type: local
+
+actor:
+  backend: "megatron:d8p1t1"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: Qwen/Qwen3-4B-Thinking-2507
+  init_from_scratch: false
+  disable_dropout: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  mb_spec:
+    max_tokens_per_mb: 32768
+    packing_algorithm: ffd
+  pad_to_maximum: true
+  enable_tree_training: false
+  optimizer:
+    type: adam
+    lr: 8e-6
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.95
+    eps: 1e-8
+    lr_scheduler_type: cosine
+    gradient_clipping: 1.0
+    warmup_steps_proportion: 0.03
+  megatron:
+    bridge_type: mbridge
+    ddp:
+      overlap_grad_reduce: false
+      overlap_param_gather: false
+      use_distributed_optimizer: true
+    use_deterministic_algorithms: false
+  scheduling_spec:
+    - task_type: worker
+      port_count: 2
+      gpu: 1
+      cpu: 16
+      mem: 128
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        PATH: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-megatron/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        NCCL_SOCKET_IFNAME: enp71s0
+        GLOO_SOCKET_IFNAME: enp71s0
+        NCCL_CUMEM_ENABLE: "0"
+        NCCL_NVLS_ENABLE: "0"
+        CUDA_DEVICE_MAX_CONNECTIONS: "1"
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+        HF_HOME: /wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+        HF_HUB_ENABLE_HF_TRANSFER: "1"
+        TRITON_CACHE_DIR: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+        TRITON_CACHE_PATH: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+        TRANSFORMERS_NO_TF: "1"
+        USE_TF: "0"
+        USE_FLAX: "0"
+        TF_CPP_MIN_LOG_LEVEL: "3"
+
+train_dataset:
+  batch_size: 512
+  shuffle: false
+  pin_memory: true
+  num_workers: 8
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_medium.terminus_tool.jsonl
+  split: train
+  type: sft
+  max_length: 32768
+  scheduling_spec: null
+  dataset_kwargs:
+    split_part: null
+    holdout_size: 0
+    shuffle_records: false
+    enable_thinking: true
+    lazy_tokenize: true
+    sft_format: trajectory
+    truncate_long: true
+
+valid_dataset: null
+
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 25
+  freq_secs: null
+
+recover:
+  mode: disabled
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  eval_before_train: false
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  wandb:
+    mode: disabled

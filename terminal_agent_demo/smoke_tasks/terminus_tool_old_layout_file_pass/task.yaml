@@ -1,0 +1,12 @@
+instruction: |
+  Create a file named /app/answer.txt that contains exactly the single word pass.
+difficulty: easy
+category: software_engineering
+tags:
+  - smoke
+parser_name: pytest
+max_agent_timeout_sec: 120
+max_test_timeout_sec: 60
+run_tests_in_same_shell: false
+disable_asciinema: true
+estimated_duration_sec: 10

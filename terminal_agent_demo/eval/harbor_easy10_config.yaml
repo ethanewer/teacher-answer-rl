@@ -1,0 +1,40 @@
+job_name: terminus-tool-qwen3-thinking-easy10
+jobs_dir: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/terminal_bench_eval/harbor_jobs/terminus-tool-qwen3-thinking-easy10
+n_attempts: 5
+n_concurrent_trials: 5
+quiet: false
+environment:
+  type: docker
+  delete: true
+  override_cpus: 3
+  override_memory_mb: 10000
+agents:
+  - import_path: terminal_agent_demo.terminus_tool_calling:TerminusToolCallingAgent
+    model_name: openai/terminal-local
+    kwargs:
+      api_base: http://127.0.0.1:30080/v1
+      temperature: 0.2
+      max_turns: 40
+      max_tokens: 6144
+      top_p: 0.8
+      top_k: 20
+      record_terminal_session: true
+      model_info:
+        max_input_tokens: 32768
+        max_output_tokens: 6144
+        input_cost_per_token: 0.0
+        output_cost_per_token: 0.0
+      llm_kwargs: {}
+datasets:
+  - path: /wbl-fast/usrs/ee/teacher-answer-rl/harbor_datasets/terminal-bench
+    task_names:
+      - modernize-scientific-stack
+      - log-summary-date-ranges
+      - multi-source-data-merger
+      - nginx-request-logging
+      - git-leak-recovery
+      - fix-git
+      - constraints-scheduling
+      - vulnerable-secret
+      - regex-log
+      - sqlite-db-truncate
