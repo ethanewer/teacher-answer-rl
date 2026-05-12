@@ -1,0 +1,209 @@
+experiment_name: qwen3-4b-thinking-terminus-tool-grpo-smoke-h200
+trial_name: smoke
+
+seed: 7
+enable_offload: false
+total_train_epochs: 1
+total_train_steps: 1
+tokenizer_path: ${actor.path}
+
+n_trajs: 1
+max_turns: 8
+max_workers: 1
+max_tokens_per_trajectory: 32768
+observation_max_chars: 6000
+turn_discount: 0.9
+filter_uniform_reward: false
+encourage_completion_reward: false
+task_timeouts:
+  reset_env: 1200.0
+  reset_agent: 120.0
+  agent_step: 300.0
+  command: 120.0
+  verifier: 600.0
+  cleanup: null
+
+cluster:
+  n_nodes: 1
+  n_gpus_per_node: 8
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminus-tool-calling
+  name_resolve:
+    type: nfs
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminus-tool-calling/name_resolve
+
+scheduler:
+  type: local
+
+rollout:
+  backend: "vllm:d4p1t1"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  max_concurrent_rollouts: 4
+  queue_size: 16
+  consumer_batch_size: ${train_dataset.batch_size}
+  max_head_offpolicyness: 2
+  enable_rollout_tracing: false
+  scheduling_spec: ${actor.scheduling_spec}
+  fileroot: ${cluster.fileroot}
+  tokenizer_path: ${tokenizer_path}
+  dump_to_file: true
+  check_trajectory_format: true
+
+gconfig:
+  n_samples: 1
+  min_new_tokens: 0
+  max_new_tokens: 4096
+  greedy: false
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+eval_gconfig:
+  n_samples: 1
+  min_new_tokens: 0
+  max_new_tokens: 4096
+  greedy: false
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+
+actor:
+  backend: "megatron:d4p1t1"
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: Qwen/Qwen3-4B-Thinking-2507
+  init_from_scratch: false
+  disable_dropout: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  mb_spec:
+    max_tokens_per_mb: 32768
+    packing_algorithm: ffd
+  optimizer:
+    type: adam
+    lr: 3e-6
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1e-8
+    lr_scheduler_type: constant
+    gradient_clipping: 1.0
+    warmup_steps_proportion: 0.001
+  eps_clip: 0.25
+  temperature: ${gconfig.temperature}
+  reward_scaling: 1.0
+  reward_bias: 0.0
+  kl_ctl: 0.0
+  ppo_n_minibatches: 1
+  recompute_logprob: true
+  use_decoupled_loss: true
+  rejection_sampling:
+    metric: ratio
+    upper: 5.0
+  reward_norm:
+    mean_level: batch
+    std_level: batch
+  adv_norm:
+    mean_level: batch
+    std_level: batch
+  weight_update_mode: xccl
+  max_new_tokens: ${gconfig.max_new_tokens}
+  megatron:
+    bridge_type: mbridge
+    ddp:
+      overlap_grad_reduce: false
+      overlap_param_gather: false
+      use_distributed_optimizer: true
+    use_deterministic_algorithms: false
+  scheduling_spec:
+    - task_type: worker
+      port_count: 2
+      gpu: 1
+      cpu: 16
+      mem: 128
+      cmd: python3 -m areal.infra.rpc.rpc_server
+      env_vars:
+        PATH: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-megatron/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        NCCL_SOCKET_IFNAME: enp71s0
+        GLOO_SOCKET_IFNAME: enp71s0
+        NCCL_CUMEM_ENABLE: "0"
+        NCCL_NVLS_ENABLE: "0"
+        CUDA_DEVICE_MAX_CONNECTIONS: "1"
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+        HF_HOME: /wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+        HF_HUB_ENABLE_HF_TRANSFER: "1"
+        TRITON_CACHE_DIR: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+        TRITON_CACHE_PATH: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+        TRANSFORMERS_NO_TF: "1"
+        USE_TF: "0"
+        USE_FLAX: "0"
+        TF_CPP_MIN_LOG_LEVEL: "3"
+
+vllm:
+  model: ${actor.path}
+  python_executable: ${oc.env:AREAL_VLLM_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-vllm/bin/python}
+  seed: ${seed}
+  skip_tokenizer_init: false
+  dtype: ${actor.dtype}
+  max_num_seqs: 16
+  max_model_len: 32768
+  gpu_memory_utilization: 0.80
+  no_enable_prefix_caching: true
+  uvicorn_log_level: warning
+
+train_dataset:
+  batch_size: 1
+  shuffle: true
+  pin_memory: true
+  num_workers: 1
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/rlvr_demo/manifests/terminus_tool_old_layout_smoke.csv
+  split: train
+  type: rl
+  max_length: 1024
+  scheduling_spec: null
+  dataset_kwargs:
+    limit: 1
+    shuffle_records: true
+
+valid_dataset: null
+
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 1
+  freq_secs: null
+
+recover:
+  mode: disabled
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  eval_before_train: false
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  wandb:
+    mode: disabled
+
+perf_tracer:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  enabled: false
+  session_tracer:
+    enabled: false
