@@ -19,6 +19,7 @@ depend on the older experiment folder.
 - `eval/`: vLLM serve script and Harbor/Terminal-Bench evaluation recipes.
 - `scripts/`: shared H200 environment setup, corpus conversion, and Qwen template
   checks.
+- `RUNTIME_SMOKE_STATUS.md`: latest runtime smoke status and known GRPO blocker.
 
 ## Harness
 
@@ -123,7 +124,8 @@ terminal_agent_demo/grpo/run.sh
 ```
 
 This is a Docker-backed Terminal-Bench smoke recipe using the same
-`execute_commands` harness.
+`execute_commands` harness. It has not yet completed an actor update in smoke;
+see `RUNTIME_SMOKE_STATUS.md` for the current GRPO blocker.
 
 Terminal-Bench evaluation:
 

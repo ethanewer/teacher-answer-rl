@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
-import datetime as _datetime
 import json
 import os
 import random
@@ -33,25 +32,74 @@ from typing import Any
 
 import httpx
 
+try:
+    from areal.api.workflow_api import RolloutWorkflow
+except Exception:  # pragma: no cover - Harbor evals do not require AReaL.
+    class RolloutWorkflow:  # type: ignore[no-redef]
+        pass
 
-TERMINUS_TOOL_SYSTEM_PROMPT = """You are Terminus, a terminal automation agent.
-You solve Linux command-line tasks by calling the `execute_commands` tool.
 
-Call `execute_commands` exactly once each turn. The tool arguments use the same
-fields as the Terminus-2 JSON format:
-- `analysis`: short analysis of the current terminal state.
-- `plan`: short next-step plan.
-- `commands`: command objects whose `keystrokes` are sent exactly as written.
-- `task_complete`: true only when the task is finished.
+TERMINUS_TOOL_SYSTEM_PROMPT = """You are an AI assistant tasked with solving command-line tasks in a Linux environment. You will be given a task description and the output from previously executed commands. Your goal is to solve the task by calling the `execute_commands` tool with batches of shell commands.
 
-Most shell commands should end with a newline (`\n`) so they execute. Use a
-small `duration` such as 0.1 for immediate commands, around 1.0 for normal
-commands, and short polling waits for long-running commands. Never wait longer
-than 60 seconds in one command object.
+Call `execute_commands` exactly once each turn with arguments matching this structure:
 
-Do not put the Terminus JSON payload in visible assistant text. Put all
-Terminus action fields in the `execute_commands` tool call arguments.
+{
+  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
+  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
+  "commands": [
+    {
+      "keystrokes": "ls -la\\n",
+      "duration": 0.1
+    },
+    {
+      "keystrokes": "cd project\\n",
+      "duration": 0.1
+    }
+  ],
+  "task_complete": true
+}
+
+Required fields:
+- "analysis": Your analysis of the current situation
+- "plan": Your plan for the next steps
+- "commands": Array of command objects to execute
+
+Optional fields:
+- "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
+
+Command object structure:
+- "keystrokes": String containing the exact keystrokes to send to the terminal (required)
+- "duration": Number of seconds to wait for the command to complete before the next command will be executed (defaults to 1.0 if not present)
+
+IMPORTANT: The text inside "keystrokes" will be used completely verbatim as keystrokes. Write commands exactly as you want them sent to the terminal:
+- You must end every command with a newline (\\n) or it will not execute.
+- For special key sequences, use tmux-style escape sequences:
+  - C-c for Ctrl+C
+  - C-d for Ctrl+D
+
+The "duration" attribute specifies the number of seconds to wait for the command to complete (default: 1.0) before the next command will be executed. On immediate tasks (e.g., cd, ls, echo, cat) set a duration of 0.1 seconds. On commands (e.g., gcc, find, rustc) set a duration of 1.0 seconds. On slow commands (e.g., make, python3 [long running script], wget [file]) set an appropriate duration as you determine necessary.
+
+It is better to set a smaller duration than a longer duration. It is always possible to wait again if the prior output has not finished, by calling `execute_commands` with {"keystrokes": "", "duration": 10.0} on subsequent requests to wait longer. Never wait longer than 60 seconds; prefer to poll to see intermediate result status.
+
+Important notes:
+- Each command's keystrokes are sent exactly as written to the terminal
+- Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
+- Do not put the action JSON in visible assistant text; put all action fields in the `execute_commands` tool call arguments
+- Tool arguments must be valid JSON - use proper escaping for quotes and special characters within strings
+- Commands array can be empty if you want to wait without taking action
 """
+
+
+TIMEOUT_PROMPT_TEMPLATE = """Previous command:
+{command}
+
+The previous command timed out after {timeout_sec} seconds
+
+It is possible that the command is not yet finished executing. If that is the case, then do nothing. It is also possible that you have entered an interactive shell and should continue sending keystrokes as normal.
+
+Here is the current state of the terminal:
+
+{terminal_state}"""
 
 
 EXECUTE_COMMANDS_TOOL: dict[str, Any] = {
@@ -83,15 +131,13 @@ EXECUTE_COMMANDS_TOOL: dict[str, Any] = {
                             "keystrokes": {
                                 "type": "string",
                                 "description": (
-                                    "Exact keystrokes to send to the terminal. "
-                                    "Append \\n when the command should execute."
+                                    "Exact keystrokes to send to the terminal. Append \\n when the command should execute."
                                 ),
                             },
                             "duration": {
                                 "type": "number",
                                 "description": (
-                                    "Seconds to wait after sending these keystrokes. "
-                                    "Defaults to 1.0 if omitted."
+                                    "Seconds to wait after sending these keystrokes. Defaults to 1.0 if omitted."
                                 ),
                             },
                         },
@@ -104,7 +150,7 @@ EXECUTE_COMMANDS_TOOL: dict[str, Any] = {
                     "description": "Whether the task is complete and ready for grading.",
                 },
             },
-            "required": ["analysis", "plan", "commands", "task_complete"],
+            "required": ["analysis", "plan", "commands"],
             "additionalProperties": False,
         },
     },
@@ -155,13 +201,9 @@ def build_initial_messages(
     task_name: str | None = None,
 ) -> list[dict[str, Any]]:
     state = terminal_state.strip() or "Current Terminal Screen:\n$"
-    task_line = f"Task name: {task_name}\n" if task_name else ""
     user_content = (
-        f"Current date: {_datetime.date.today().isoformat()}\n"
-        "We are in the root directory /app.\n\n"
-        f"{task_line}"
-        f"Task description:\n{instruction.strip()}\n\n"
-        f"{state}"
+        f"Task Description:\n{instruction.strip()}\n\n"
+        f"Current terminal state:\n{state}"
     )
     return [
         {"role": "system", "content": TERMINUS_TOOL_SYSTEM_PROMPT},
@@ -243,7 +285,7 @@ def parse_execute_commands_arguments(raw: str | dict[str, Any]) -> ParsedPayload
             duration = float(item.get("duration", 1.0))
         except (TypeError, ValueError) as exc:
             raise TerminusToolPayloadError(f"commands[{idx}].duration is invalid") from exc
-        parsed_commands.append(ParsedCommand(keystrokes=keystrokes, duration=max(duration, 0.0)))
+        parsed_commands.append(ParsedCommand(keystrokes=keystrokes, duration=min(max(duration, 0.0), 60.0)))
 
     return ParsedPayload(
         analysis=analysis,
@@ -258,15 +300,12 @@ def payload_to_arguments(payload: ParsedPayload | dict[str, Any]) -> str:
         obj = {
             "analysis": payload.analysis,
             "plan": payload.plan,
-            "commands": [
-                {"keystrokes": command.keystrokes, "duration": command.duration}
-                for command in payload.commands
-            ],
+            "commands": [{"keystrokes": command.keystrokes, "duration": command.duration} for command in payload.commands],
             "task_complete": payload.task_complete,
         }
     else:
         obj = payload
-    return json.dumps(obj, ensure_ascii=False, indent=2)
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
 def _first_tool_call(message: Any) -> Any | None:
@@ -310,10 +349,7 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
         }
         tool_calls = getattr(message, "tool_calls", None)
         if tool_calls:
-            data["tool_calls"] = [
-                tc.model_dump(exclude_none=True) if hasattr(tc, "model_dump") else tc
-                for tc in tool_calls
-            ]
+            data["tool_calls"] = [tc.model_dump(exclude_none=True) if hasattr(tc, "model_dump") else tc for tc in tool_calls]
     data.setdefault("role", "assistant")
     return data
 
@@ -332,11 +368,41 @@ def tool_response_message(
     }
 
 
+def limit_output_length(output: str, max_bytes: int = 10000) -> str:
+    if len(output.encode("utf-8")) <= max_bytes:
+        return output
+
+    portion_size = max_bytes // 2
+    output_bytes = output.encode("utf-8")
+    first_portion = output_bytes[:portion_size].decode("utf-8", errors="ignore")
+    last_portion = output_bytes[-portion_size:].decode("utf-8", errors="ignore")
+    omitted_bytes = (
+        len(output_bytes)
+        - len(first_portion.encode("utf-8"))
+        - len(last_portion.encode("utf-8"))
+    )
+
+    return (
+        f"{first_portion}\n[... output limited to {max_bytes} bytes; "
+        f"{omitted_bytes} interior bytes omitted ...]\n{last_portion}"
+    )
+
+
+def completion_confirmation_message(terminal_output: str) -> str:
+    return (
+        f"Current terminal state:\n{terminal_output}\n\n"
+        "Are you sure you want to mark the task as complete? "
+        "This will trigger your solution to be graded and you won't be able to "
+        "make any further corrections. If so, call `execute_commands` again "
+        'with "task_complete": true.'
+    )
+
+
 def _strip_new_terminal_prefix(text: str) -> str:
     stripped = text.strip()
     for prefix in ("New Terminal Output:", "Current Terminal Screen:", "Current terminal state:"):
         if stripped.startswith(prefix):
-            return stripped
+            return stripped[len(prefix) :].lstrip()
     return stripped
 
 
@@ -346,7 +412,7 @@ def _split_terminus_initial_prompt(content: str) -> tuple[str, str]:
     if task_marker in content and state_marker in content:
         before_state, state = content.split(state_marker, 1)
         instruction = before_state.split(task_marker, 1)[1].strip()
-        return instruction, f"Current Terminal Screen:\n{state.strip()}"
+        return instruction, state.strip()
     return content.strip(), "Current Terminal Screen:\n$"
 
 
@@ -430,9 +496,7 @@ class _DeepSeekMessage(SimpleNamespace):
         tool_calls = None
         if raw_tool_calls:
             tool_calls = [
-                call.model_dump(exclude_none=exclude_none)
-                if hasattr(call, "model_dump")
-                else call
+                call.model_dump(exclude_none=exclude_none) if hasattr(call, "model_dump") else call
                 for call in raw_tool_calls
             ]
         data = {
@@ -486,10 +550,7 @@ class _DeepSeekCompletions:
                 json=body,
             )
         if response.status_code >= 400:
-            raise RuntimeError(
-                f"DeepSeek API error {response.status_code}: "
-                f"{response.text[:2000]}"
-            )
+            raise RuntimeError(f"DeepSeek API error {response.status_code}: {response.text[:2000]}")
         payload = response.json()
         usage = payload.get("usage") or {}
         self.prompt_tokens += int(usage.get("prompt_tokens") or 0)
@@ -848,6 +909,7 @@ class TerminusToolTerminalTaskRunner:
         self.parser: Any = None
         self.task_name = ""
         self.traj_i = 0
+        self._pending_completion = False
 
     async def run_in_executor(self, fn: Any, *args: Any, timeout: float | None = None, **kwargs: Any) -> Any:
         loop = asyncio.get_running_loop()
@@ -890,22 +952,23 @@ class TerminusToolTerminalTaskRunner:
         if self.terminal is None:
             raise RuntimeError("terminal is not initialized")
         session = self.terminal.get_session("agent")
-        observations: list[str] = []
         for command in commands:
             keystrokes = str(command["keystrokes"])
-            duration = float(command.get("duration", 0.1))
-            is_executing = keystrokes.endswith(("\n", "\r"))
-            session.send_keys(
-                [keystrokes],
-                block=is_executing,
-                min_timeout_sec=duration if not is_executing else 0.0,
-                max_timeout_sec=self.task_timeouts.command,
-            )
-            observations.append(session.get_incremental_output())
-        text = "\n\n".join(observations).strip()
-        if len(text) > self.observation_max_chars:
-            text = text[-self.observation_max_chars :]
-        return text
+            duration = min(max(float(command.get("duration", 1.0)), 0.0), 60.0)
+            try:
+                session.send_keys(
+                    [keystrokes],
+                    block=False,
+                    min_timeout_sec=duration,
+                    max_timeout_sec=self.task_timeouts.command,
+                )
+            except TimeoutError:
+                return TIMEOUT_PROMPT_TEMPLATE.format(
+                    timeout_sec=duration,
+                    command=keystrokes,
+                    terminal_state=limit_output_length(session.get_incremental_output()),
+                )
+        return limit_output_length(session.get_incremental_output())
 
     def _evaluate_completion_sync(self) -> float:
         from terminal_bench.parsers.base_parser import UnitTestStatus
@@ -938,8 +1001,7 @@ class TerminusToolTerminalTaskRunner:
             test_output = test_session.capture_pane(capture_entire=True)
             parser_results = self.parser.parse(test_output)
             pass_ratio = (
-                sum(1 for status in parser_results.values() if status == UnitTestStatus.PASSED)
-                / len(parser_results)
+                sum(1 for status in parser_results.values() if status == UnitTestStatus.PASSED) / len(parser_results)
                 if parser_results
                 else 0.0
             )
@@ -956,34 +1018,50 @@ class TerminusToolTerminalTaskRunner:
 
     @staticmethod
     def _commands_for_base_runner(payload: ParsedPayload) -> list[dict[str, Any]]:
-        return [
-            {"keystrokes": command.keystrokes, "duration": command.duration}
-            for command in payload.commands
-        ]
+        return [{"keystrokes": command.keystrokes, "duration": command.duration} for command in payload.commands]
 
     async def _handle_tool_call(self, messages: list[dict[str, Any]], tool_call: Any) -> bool:
         call_id = _tool_call_id(tool_call)
         name = _tool_call_name(tool_call)
         if name != "execute_commands":
-            messages.append(tool_response_message(call_id, f"Unknown tool: {name}"))
+            messages.append(
+                tool_response_message(
+                    call_id,
+                    "Previous response had parsing errors:\n"
+                    f"ERROR: Unknown tool: {name}\n\n"
+                    "Please fix these issues and provide a proper tool call.",
+                )
+            )
             return False
 
         try:
             payload = parse_execute_commands_arguments(_tool_call_arguments(tool_call))
         except TerminusToolPayloadError as exc:
-            messages.append(tool_response_message(call_id, f"Tool argument error: {exc}"))
+            messages.append(
+                tool_response_message(
+                    call_id,
+                    "Previous response had parsing errors:\n"
+                    f"ERROR: {exc}\n\n"
+                    "Please fix these issues and provide a proper tool call.",
+                )
+            )
             return False
 
-        if payload.commands:
-            observation = await self.run_in_executor(
-                self._execute_commands,
-                self._commands_for_base_runner(payload),
-                timeout=self.task_timeouts.command * max(len(payload.commands), 1) + 10,
-            )
+        observation = await self.run_in_executor(
+            self._execute_commands,
+            self._commands_for_base_runner(payload),
+            timeout=self.task_timeouts.command * max(len(payload.commands), 1) + 10,
+        )
+        if payload.task_complete:
+            if self._pending_completion:
+                messages.append(tool_response_message(call_id, observation))
+                return True
+            self._pending_completion = True
+            observation = completion_confirmation_message(observation)
         else:
-            observation = "No commands were executed."
-        messages.append(tool_response_message(call_id, f"New Terminal Output:\n{observation}"))
-        return payload.task_complete
+            self._pending_completion = False
+        messages.append(tool_response_message(call_id, observation))
+        return False
 
     async def run_agent(
         self,
@@ -997,6 +1075,7 @@ class TerminusToolTerminalTaskRunner:
         @session_context()
         async def _run() -> float | None:
             self.traj_i = traj_i
+            self._pending_completion = False
             task_name = str(data.get("task_name"))
             messages = build_initial_messages(
                 str(data["instruction"]),
@@ -1031,7 +1110,21 @@ class TerminusToolTerminalTaskRunner:
                     messages.append(_message_to_dict(message))
                     tool_call = _first_tool_call(message)
                     if tool_call is None:
-                        break
+                        # Keep recovery feedback as an assistant turn. A new
+                        # user message makes Qwen thinking templates treat the
+                        # error as the latest query and strip prior reasoning;
+                        # an unpaired tool message can be rejected by servers.
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "Previous response had parsing errors:\n"
+                                    "ERROR: No execute_commands tool call was produced.\n\n"
+                                    "Please fix these issues and provide a proper tool call."
+                                ),
+                            }
+                        )
+                        continue
                     if await self._handle_tool_call(messages, tool_call):
                         break
 
@@ -1062,102 +1155,98 @@ class TerminusToolTerminalTaskRunner:
         return await _run()
 
 
-class TerminusToolTerminalGRPOWorkflow:  # Subclassed dynamically to avoid Harbor import failures.
-    def __new__(cls, *args: Any, **kwargs: Any):
-        from areal.api.workflow_api import RolloutWorkflow
+class TerminusToolTerminalGRPOWorkflow(RolloutWorkflow):
+    """AReaL rollout workflow for Terminus tool-calling terminal tasks."""
 
-        class _Workflow(RolloutWorkflow):
-            def __init__(
-                self,
-                gconfig: Any,
-                tokenizer: Any,
-                dump_dir: str | None = None,
-                rollout_stat_scope: str = "rollout",
-                n_trajs: int = 1,
-                max_turns: int = 25,
-                max_tokens_per_trajectory: int = 32768,
-                max_workers: int = 16,
-                observation_max_chars: int = 8000,
-                turn_discount: float = 0.9,
-                task_timeouts: Any | None = None,
-                filter_uniform_reward: bool = False,
-                encourage_completion_reward: bool = False,
-            ):
-                from concurrent.futures import ThreadPoolExecutor
+    def __init__(
+        self,
+        gconfig: Any,
+        tokenizer: Any,
+        dump_dir: str | None = None,
+        rollout_stat_scope: str = "rollout",
+        n_trajs: int = 1,
+        max_turns: int = 25,
+        max_tokens_per_trajectory: int = 32768,
+        max_workers: int = 16,
+        observation_max_chars: int = 8000,
+        turn_discount: float = 0.9,
+        task_timeouts: Any | None = None,
+        filter_uniform_reward: bool = False,
+        encourage_completion_reward: bool = False,
+    ) -> None:
+        from concurrent.futures import ThreadPoolExecutor
 
-                self.gconfig = gconfig
-                self.gconfig.n_samples = 1
-                self.tokenizer = tokenizer
-                self.dump_dir = dump_dir or "terminus_tool_grpo_generated"
-                Path(self.dump_dir).mkdir(parents=True, exist_ok=True)
-                self.rollout_stat_scope = rollout_stat_scope
-                self.n_trajs = n_trajs
-                self.max_turns = max_turns
-                self.max_tokens_per_trajectory = max_tokens_per_trajectory
-                self.max_workers = max_workers
-                self.observation_max_chars = observation_max_chars
-                self.turn_discount = turn_discount
-                self.task_timeouts = task_timeouts or TerminalTaskTimeouts()
-                self.filter_uniform_reward = filter_uniform_reward
-                self.encourage_completion_reward = encourage_completion_reward
-                self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.gconfig = gconfig
+        self.gconfig.n_samples = 1
+        self.tokenizer = tokenizer
+        self.dump_dir = dump_dir or "terminus_tool_grpo_generated"
+        Path(self.dump_dir).mkdir(parents=True, exist_ok=True)
+        self.rollout_stat_scope = rollout_stat_scope
+        self.n_trajs = n_trajs
+        self.max_turns = max_turns
+        self.max_tokens_per_trajectory = max_tokens_per_trajectory
+        self.max_workers = max_workers
+        self.observation_max_chars = observation_max_chars
+        self.turn_discount = turn_discount
+        self.task_timeouts = task_timeouts or TerminalTaskTimeouts()
+        self.filter_uniform_reward = filter_uniform_reward
+        self.encourage_completion_reward = encourage_completion_reward
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
 
-            async def arun_episode(self, engine: Any, data: dict[str, Any]):
-                from areal import workflow_context
-                from areal.experimental.openai import ArealOpenAI
-                from areal.utils import stats_tracker
+    async def arun_episode(self, engine: Any, data: dict[str, Any]):
+        from areal import workflow_context
+        from areal.experimental.openai import ArealOpenAI
+        from areal.utils import stats_tracker
 
-                clients = [
-                    ArealOpenAI(
-                        engine=engine,
-                        tokenizer=self.tokenizer,
-                        tool_call_parser="qwen3",
-                        reasoning_parser="qwen3",
-                        engine_max_tokens=self.gconfig.max_new_tokens,
-                        chat_template_type="hf",
-                    )
-                    for _ in range(self.n_trajs)
-                ]
-                uids = [uuid.uuid4().hex[:8] for _ in range(self.n_trajs)]
-                rewards = await asyncio.gather(
-                    *[
-                        TerminusToolTerminalTaskRunner(
-                            output_path=os.path.join(self.dump_dir, "TerminusToolTerminalTaskRunner"),
-                            max_turns=self.max_turns,
-                            max_tokens_per_turn=self.gconfig.max_new_tokens,
-                            temperature=self.gconfig.temperature,
-                            top_p=self.gconfig.top_p,
-                            observation_max_chars=self.observation_max_chars,
-                            task_timeouts=self.task_timeouts,
-                            encourage_completion_reward=self.encourage_completion_reward,
-                            executor=self.executor,
-                        ).run_agent(data=data, client=clients[i], uid=uids[i], traj_i=i)
-                        for i in range(self.n_trajs)
-                    ]
-                )
+        clients = [
+            ArealOpenAI(
+                engine=engine,
+                tokenizer=self.tokenizer,
+                tool_call_parser="qwen3",
+                reasoning_parser="qwen3",
+                engine_max_tokens=self.max_tokens_per_trajectory,
+                chat_template_type="hf",
+            )
+            for _ in range(self.n_trajs)
+        ]
+        uids = [uuid.uuid4().hex[:8] for _ in range(self.n_trajs)]
+        rewards = await asyncio.gather(
+            *[
+                TerminusToolTerminalTaskRunner(
+                    output_path=os.path.join(self.dump_dir, "TerminusToolTerminalTaskRunner"),
+                    max_turns=self.max_turns,
+                    max_tokens_per_turn=self.gconfig.max_new_tokens,
+                    temperature=self.gconfig.temperature,
+                    top_p=self.gconfig.top_p,
+                    observation_max_chars=self.observation_max_chars,
+                    task_timeouts=self.task_timeouts,
+                    encourage_completion_reward=self.encourage_completion_reward,
+                    executor=self.executor,
+                ).run_agent(data=data, client=clients[i], uid=uids[i], traj_i=i)
+                for i in range(self.n_trajs)
+            ]
+        )
 
-                if self.filter_uniform_reward:
-                    valid_rewards = [reward for reward in rewards if reward is not None]
-                    if not valid_rewards or all(reward == valid_rewards[0] for reward in valid_rewards):
-                        return None
+        if self.filter_uniform_reward:
+            valid_rewards = [reward for reward in rewards if reward is not None]
+            if not valid_rewards or all(reward == valid_rewards[0] for reward in valid_rewards):
+                return None
 
-                completions_with_reward: dict[str, Any] = {}
-                for reward, client in zip(rewards, clients):
-                    if reward is None:
-                        continue
-                    stats_tracker.get(workflow_context.stat_scope()).scalar(reward=float(reward))
-                    client.apply_reward_discount(turn_discount=self.turn_discount)
-                    completions_with_reward.update(client.export_interactions(style="individual"))
+        completions_with_reward: dict[str, Any] = {}
+        for reward, client in zip(rewards, clients):
+            if reward is None:
+                continue
+            stats_tracker.get(workflow_context.stat_scope()).scalar(reward=float(reward))
+            client.apply_reward_discount(turn_discount=self.turn_discount)
+            completions_with_reward.update(client.export_interactions(style="individual"))
 
-                stats_tracker.get(workflow_context.stat_scope()).scalar(
-                    num_full_passes=sum(1 for reward in rewards if reward == 1.0)
-                )
-                stats_tracker.get(workflow_context.stat_scope()).scalar(
-                    num_trajectories_failed=sum(1 for reward in rewards if reward is None)
-                )
-                return completions_with_reward or None
-
-        return _Workflow(*args, **kwargs)
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            num_full_passes=sum(1 for reward in rewards if reward == 1.0)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            num_trajectories_failed=sum(1 for reward in rewards if reward is None)
+        )
+        return completions_with_reward or None
 
 
 try:
@@ -1184,10 +1273,10 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         logs_dir: Path,
         model_name: str | None = None,
         api_base: str | None = None,
-        temperature: float = 0.2,
-        max_turns: int = 40,
+        temperature: float | None = None,
+        max_turns: int | None = None,
         max_tokens: int = 8192,
-        top_p: float = 0.8,
+        top_p: float | None = None,
         top_k: int | None = None,
         model_info: dict[str, Any] | None = None,
         record_terminal_session: bool = True,
@@ -1201,9 +1290,9 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         if model_name is None:
             raise ValueError("model_name is required")
         self._model_name = model_name
-        self._api_base = (api_base or "https://api.deepseek.com").rstrip("/")
+        self._api_base = (api_base or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
         self._temperature = temperature
-        self._max_turns = max_turns
+        self._max_turns = max_turns if max_turns is not None else 1000000
         self._max_tokens = max_tokens
         self._top_p = top_p
         self._top_k = top_k
@@ -1214,14 +1303,11 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         self._llm_kwargs = dict(llm_kwargs or {})
         self._extra_env = extra_env
         self._session: Any = None
+        self._pending_completion = False
         self._prompt_tokens = 0
         self._completion_tokens = 0
         self._messages: list[dict[str, Any]] = []
-        self._api_key = (
-            os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("DEEPSEEK_API_KEY")
-            or "EMPTY"
-        )
+        self._api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or "EMPTY"
 
     @staticmethod
     def name() -> str:
@@ -1261,11 +1347,13 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
                 "type": "function",
                 "function": {"name": "execute_commands"},
             },
-            "temperature": self._temperature,
-            "top_p": self._top_p,
             "max_tokens": self._max_tokens,
             **self._llm_kwargs,
         }
+        if self._temperature is not None:
+            body.setdefault("temperature", self._temperature)
+        if self._top_p is not None:
+            body.setdefault("top_p", self._top_p)
         if self._top_k is not None:
             body.setdefault("top_k", self._top_k)
         headers = {
@@ -1301,31 +1389,20 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
     async def _execute_commands(self, payload: ParsedPayload) -> str:
         if self._session is None:
             raise RuntimeError("tmux session is not initialized")
-        observations: list[str] = []
         for command in payload.commands:
-            is_executing = command.keystrokes.endswith(("\n", "\r"))
             try:
                 await self._session.send_keys(
                     command.keystrokes,
-                    block=is_executing,
-                    min_timeout_sec=command.duration if not is_executing else 0.0,
-                    max_timeout_sec=min(max(command.duration, 1.0), 180.0),
+                    block=False,
+                    min_timeout_sec=command.duration,
                 )
             except TimeoutError:
-                observations.append(
-                    "Previous command timed out. It may still be running; poll or interrupt as needed."
+                return TIMEOUT_PROMPT_TEMPLATE.format(
+                    timeout_sec=command.duration,
+                    command=command.keystrokes,
+                    terminal_state=limit_output_length(await self._session.get_incremental_output()),
                 )
-            observations.append(await self._session.get_incremental_output())
-        text = "\n\n".join(observations).strip() if observations else "No commands were executed."
-        if len(text.encode("utf-8")) > 10000:
-            raw = text.encode("utf-8")
-            half = 5000
-            text = (
-                raw[:half].decode("utf-8", errors="ignore")
-                + "\n[... output limited to 10000 bytes ...]\n"
-                + raw[-half:].decode("utf-8", errors="ignore")
-            )
-        return text
+        return limit_output_length(await self._session.get_incremental_output())
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         if self._session is None:
@@ -1340,23 +1417,44 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             messages.append(_message_to_dict(message))
             tool_call = _first_tool_call(message)
             if tool_call is None:
+                # Keep recovery feedback as an assistant turn. A new user
+                # message makes Qwen thinking templates treat the error as the
+                # latest query and strip prior reasoning; an unpaired tool
+                # message can be rejected by servers.
                 messages.append(
                     {
                         "role": "assistant",
-                        "content": "No execute_commands tool call was produced.",
+                        "content": (
+                            "Previous response had parsing errors:\n"
+                            "ERROR: No execute_commands tool call was produced.\n\n"
+                            "Please fix these issues and provide a proper tool call."
+                        ),
                     }
                 )
-                break
+                continue
             call_id = _tool_call_id(tool_call)
             try:
                 payload = parse_execute_commands_arguments(_tool_call_arguments(tool_call))
             except TerminusToolPayloadError as exc:
-                messages.append(tool_response_message(call_id, f"Tool argument error: {exc}"))
+                messages.append(
+                    tool_response_message(
+                        call_id,
+                        "Previous response had parsing errors:\n"
+                        f"ERROR: {exc}\n\n"
+                        "Please fix these issues and provide a proper tool call.",
+                    )
+                )
                 continue
             observation = await self._execute_commands(payload)
-            messages.append(tool_response_message(call_id, observation))
             if payload.task_complete:
-                break
+                if self._pending_completion:
+                    messages.append(tool_response_message(call_id, observation))
+                    break
+                self._pending_completion = True
+                observation = completion_confirmation_message(observation)
+            else:
+                self._pending_completion = False
+            messages.append(tool_response_message(call_id, observation))
 
         context.n_input_tokens = self._prompt_tokens
         context.n_output_tokens = self._completion_tokens
@@ -1456,13 +1554,7 @@ def check_qwen_template(args: argparse.Namespace) -> None:
 
     model_path = args.model
     if args.local_files_only and "/" in model_path and not Path(model_path).exists():
-        candidate = (
-            args.cache_dir
-            / "hub"
-            / ("models--" + model_path.replace("/", "--"))
-            / "refs"
-            / "main"
-        )
+        candidate = args.cache_dir / "hub" / ("models--" + model_path.replace("/", "--")) / "refs" / "main"
         if candidate.exists():
             revision = candidate.read_text(encoding="utf-8").strip()
             snapshot = candidate.parent.parent / "snapshots" / revision
@@ -1476,8 +1568,7 @@ def check_qwen_template(args: argparse.Namespace) -> None:
         trust_remote_code=True,
     )
     messages = [
-        {"role": "system", "content": TERMINUS_TOOL_SYSTEM_PROMPT},
-        {"role": "user", "content": "Task description:\ninspect the repo"},
+        *build_initial_messages("inspect the repo"),
         {
             "role": "assistant",
             "content": "<think>\nfirst turn reasoning\n</think>",
@@ -1646,13 +1737,25 @@ def main() -> None:
     smoke.add_argument("--env", type=Path, default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/.env"))
     smoke.add_argument("--model", default="deepseek-v4-pro")
     smoke.add_argument("--base-url", default=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
-    smoke.add_argument("--manifest", type=Path, default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/easy/manifest.csv"))
+    smoke.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/terminal_synthetic_tasks/easy/manifest.csv"),
+    )
     smoke.add_argument("--limit", type=int, default=4)
     smoke.add_argument("--seed", type=int, default=7)
     smoke.add_argument("--shuffle", action="store_true")
     smoke.add_argument("--max-workers", type=int, default=1)
-    smoke.add_argument("--output-dir", type=Path, default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/deepseek_smoke"))
-    smoke.add_argument("--results-output", type=Path, default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/deepseek_smoke/results.json"))
+    smoke.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminus-tool-calling/deepseek_smoke"),
+    )
+    smoke.add_argument(
+        "--results-output",
+        type=Path,
+        default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminus-tool-calling/deepseek_smoke/results.json"),
+    )
     smoke.add_argument("--max-turns", type=int, default=12)
     smoke.add_argument("--max-tokens", type=int, default=4096)
     smoke.add_argument("--temperature", type=float, default=0.2)

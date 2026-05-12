@@ -277,15 +277,17 @@ def _split_tool_teacher_answer(
     if not turn_text.startswith(prefix_text):
         raise TerminalToolDataError("assistant turn does not extend generation prompt")
     assistant_text = turn_text[len(prefix_text) :]
-    command_positions = [
-        assistant_text.find(pattern)
+    command_starts = [
+        start
         for pattern in _COMMAND_KEY_PATTERNS
-        if assistant_text.find(pattern) >= 0
+        if (start := assistant_text.find(pattern)) >= 0
     ]
-    if not command_positions:
+    if not command_starts:
         raise TerminalToolDataError("assistant tool call has no commands key")
-    command_idx = min(command_positions)
-    teacher_start = _line_start_for_index(assistant_text, command_idx)
+    # Match the rollout workflow's stop-pattern semantics. Pretty-printed
+    # arguments stop at the preceding newline/indentation pattern; compact
+    # arguments stop directly at the "commands" key.
+    teacher_start = min(command_starts)
     student_prefix = assistant_text[:teacher_start]
     teacher_answer = assistant_text[teacher_start:].rstrip()
     if not student_prefix.strip() or not teacher_answer.strip():
