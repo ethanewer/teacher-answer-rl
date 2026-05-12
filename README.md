@@ -60,6 +60,20 @@ Default converted output:
 /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_medium.terminus_tool.jsonl
 ```
 
+For the real medium-split experiments, the reproducible data-prep script keeps
+only original even-index source rows:
+
+```bash
+cd AReaL
+terminal_agent_demo/scripts/prepare_even_medium_data.sh
+```
+
+Default even-row output:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_medium.even_original.terminus_tool.jsonl
+```
+
 ## Recipes
 
 From `AReaL/`:
@@ -68,6 +82,46 @@ From `AReaL/`:
 terminal_agent_demo/sft/run.sh
 terminal_agent_demo/teacher_answer_rl/run.sh
 terminal_agent_demo/grpo/run.sh
+```
+
+## Real Medium Experiments
+
+The real H200 recipes use `Qwen/Qwen3-4B-Thinking-2507`, preserve reasoning in
+the converted trajectories, use the `terminus_tool_calling` harness, and train on
+the full medium even-row split.
+
+Launch both real runs from a submit node:
+
+```bash
+cd AReaL
+terminal_agent_demo/scripts/launch_real_even_medium_runs.sh
+```
+
+The launcher records the exact sbatch/config paths in:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/launch_logs/
+```
+
+Individual real recipes:
+
+```text
+AReaL/terminal_agent_demo/sft/config_even_medium_real.yaml
+AReaL/terminal_agent_demo/sft/run_even_medium_real.sbatch
+AReaL/terminal_agent_demo/teacher_answer_rl/config_even_medium_real.yaml
+AReaL/terminal_agent_demo/teacher_answer_rl/run_even_medium_real.sbatch
+```
+
+The SFT recipe trains full converted trajectories with sequence packing at 32k
+context and about 0.5M-0.7M tokens per update. The teacher-answer-RL recipe is a
+turn-level method: it uses the same even-row trajectories, expands them into
+assistant-turn prompts, samples 32 prompts with 2 completions per prompt, and
+uses Terminal-Bench-style GRPO settings with 32k context.
+
+Runtime metrics are written under:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/logs/
 ```
 
 Terminal-Bench evaluation:
