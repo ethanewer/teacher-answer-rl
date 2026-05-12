@@ -1490,12 +1490,22 @@ def convert_nemotron_corpus(args: argparse.Namespace) -> None:
     summary = {
         "dataset": "nvidia/Nemotron-Terminal-Corpus",
         "config": args.config,
+        "row_index_parity": args.row_index_parity,
+        "source_rows_seen": 0,
+        "source_rows_skipped_by_parity": 0,
         "converted": 0,
         "failed": 0,
         "failures": [],
     }
     with output.open("w", encoding="utf-8") as handle:
         for row_idx, row in enumerate(_iter_corpus_rows(args.cache_root, args.config, args.limit)):
+            summary["source_rows_seen"] += 1
+            if args.row_index_parity == "even" and row_idx % 2 != 0:
+                summary["source_rows_skipped_by_parity"] += 1
+                continue
+            if args.row_index_parity == "odd" and row_idx % 2 == 0:
+                summary["source_rows_skipped_by_parity"] += 1
+                continue
             try:
                 messages = convert_terminus2_conversation(row["conversations"])
                 out = {
@@ -1503,6 +1513,7 @@ def convert_nemotron_corpus(args: argparse.Namespace) -> None:
                     "tools": [EXECUTE_COMMANDS_TOOL],
                     "source_dataset": "nvidia/Nemotron-Terminal-Corpus",
                     "source_config": args.config,
+                    "source_row_index": row_idx,
                     "source_task": row.get("task"),
                     "source_trial_name": row.get("trial_name"),
                     "source_model": row.get("model"),
@@ -1716,6 +1727,7 @@ def main() -> None:
     convert.add_argument("--cache-root", type=Path, default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache"))
     convert.add_argument("--config", default="skill_based_medium")
     convert.add_argument("--limit", type=int)
+    convert.add_argument("--row-index-parity", choices=("all", "even", "odd"), default="all")
     convert.add_argument("--output", type=Path, required=True)
     convert.add_argument("--summary-output", type=Path, required=True)
     convert.set_defaults(func=convert_nemotron_corpus)

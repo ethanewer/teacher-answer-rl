@@ -127,6 +127,43 @@ This is a Docker-backed Terminal-Bench smoke recipe using the same
 `execute_commands` harness. It has not yet completed an actor update in smoke;
 see `RUNTIME_SMOKE_STATUS.md` for the current GRPO blocker.
 
+## Real Medium Even-Row Runs
+
+The real SFT and teacher-answer-RL configs use `Qwen/Qwen3-4B-Thinking-2507`,
+32k context, converted `skill_based_medium` even-index source rows, and the
+Terminus tool-calling harness with reasoning preserved.
+
+Prepare the even-row data:
+
+```bash
+terminal_agent_demo/scripts/prepare_even_medium_data.sh
+```
+
+Launch both real runs on separate H200 nodes:
+
+```bash
+terminal_agent_demo/scripts/launch_real_even_medium_runs.sh
+```
+
+The exact launch records are written to:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/launch_logs/
+```
+
+Individual files:
+
+```text
+terminal_agent_demo/sft/config_even_medium_real.yaml
+terminal_agent_demo/sft/run_even_medium_real.sbatch
+terminal_agent_demo/teacher_answer_rl/config_even_medium_real.yaml
+terminal_agent_demo/teacher_answer_rl/run_even_medium_real.sbatch
+```
+
+SFT trains one full converted trajectory per example. Teacher-answer-RL is
+turn-level: the same even-row trajectories are expanded into assistant-turn
+prompts, so one epoch is expected to take much longer than SFT.
+
 Terminal-Bench evaluation:
 
 ```bash
