@@ -123,11 +123,11 @@ teacher-answer prefix loss on thinking tokens, tool-call syntax reward, and
 length penalties. It samples 16 prompts with 2 completions per prompt at 32k
 context and 2048 max new tokens.
 
-The real GRPO recipe uses `nvidia/Nemotron-Terminal-Synthetic-Tasks`, intersected
-with the same even-row source task IDs used by SFT and teacher-answer-RL. It
-runs 16 prompts/update with 4 completions/prompt, for 64 Docker-backed terminal
-rollouts/update, 32k context, 1024 max new tokens per turn, and a 2 actor GPU /
-6 rollout GPU split on one 8-GPU H200 node. Synthetic task directories are
+The comparable GRPO recipe starts from the final SFT checkpoint and trains on
+odd medium synthetic-task rows matched to the teacher-answer-RL setup. It runs
+16 prompts/update with 2 completions/prompt, for 32 Docker-backed terminal
+rollouts/update, 32k context, 2048 max new tokens per turn, and a 4 actor GPU /
+4 rollout GPU split on one 8-GPU H200 node. Synthetic task directories are
 materialized lazily into Terminal-Bench-compatible task directories under the
 run fileroot.
 
@@ -146,14 +146,15 @@ terminal_agent_demo/eval/run_terminal_bench_easy10_split_slurm_cpu.sh eval-name 
 
 ## Confirmed Results
 
-Terminal-Bench scores below use the Terminus tool-calling Harbor harness and the
-easy-10 split.
+Terminal-Bench scores below use the Terminus tool-calling Harbor harness on the
+easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
 
 | Model / recipe | Checkpoint | Eval setting | Score |
 | --- | --- | --- | --- |
-| Qwen3-4B-Thinking base | `Qwen/Qwen3-4B-Thinking-2507` | 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
-| SFT medium even rows | `epoch0epochstep1384globalstep1384` | 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
-| Teacher-answer-RL default recipe | `ta-ref-lenpen-w25-p128-syn08-o2048-s50`, selected step 19 | 5 trials/task, `ta-ref-lenpen-current-s19-easy10-t4096-a5-local-20260515` | 10/50 = 20% |
+| Base | `Qwen/Qwen3-4B-Thinking-2507` | easy-10, 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
+| SFT | `epoch0epochstep1384globalstep1384` | easy-10, 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
+| SFT + teacher-answer-RL | `ta-ref-lenpen-w25-p128-syn08-o2048-s50`, selected step 19 | easy-10, 5 trials/task, `ta-ref-lenpen-current-s19-easy10-t4096-a5-local-20260515` | 10/50 = 20% |
+| SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
 
 The default teacher-answer-RL recipe is:
 
@@ -165,6 +166,13 @@ It matches the successful robust recipe:
 
 ```text
 AReaL/terminal_agent_demo/teacher_answer_rl/config_odd_medium_from_sft_refscore_lenpen_w25_p128_syn08_o2048_local_s50.yaml
+```
+
+The SFT + GRPO row uses:
+
+```text
+AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_ta_comparable_b16_s2_o2048_s50.yaml
+AReaL/terminal_agent_demo/grpo/run_odd_medium_from_sft_ta_comparable_b16_s2_o2048_s50.sbatch
 ```
 
 ## Current Smoke Status
