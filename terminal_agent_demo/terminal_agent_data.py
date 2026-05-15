@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import random
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -259,6 +260,7 @@ def _split_tool_teacher_answer(
     assistant_idx: int,
     *,
     enable_thinking: bool,
+    teacher_answer_start: str = "commands",
 ) -> tuple[str, str]:
     prefix_text = _apply_chat_template(
         tokenizer,
@@ -282,12 +284,21 @@ def _split_tool_teacher_answer(
         for pattern in _COMMAND_KEY_PATTERNS
         if (start := assistant_text.find(pattern)) >= 0
     ]
-    if not command_starts:
-        raise TerminalToolDataError("assistant tool call has no commands key")
-    # Match the rollout workflow's stop-pattern semantics. Pretty-printed
-    # arguments stop at the preceding newline/indentation pattern; compact
-    # arguments stop directly at the "commands" key.
-    teacher_start = min(command_starts)
+    if teacher_answer_start == "commands":
+        if not command_starts:
+            raise TerminalToolDataError("assistant tool call has no commands key")
+        # Match the rollout workflow's stop-pattern semantics. Pretty-printed
+        # arguments stop at the preceding newline/indentation pattern; compact
+        # arguments stop directly at the "commands" key.
+        teacher_start = min(command_starts)
+    elif teacher_answer_start == "tool_call":
+        teacher_start = assistant_text.find("<tool_call>")
+        if teacher_start < 0:
+            raise TerminalToolDataError("assistant turn has no tool_call block")
+    else:
+        raise TerminalToolDataError(
+            f"unsupported teacher_answer_start: {teacher_answer_start}"
+        )
     student_prefix = assistant_text[:teacher_start]
     teacher_answer = assistant_text[teacher_start:].rstrip()
     if not student_prefix.strip() or not teacher_answer.strip():
@@ -303,12 +314,14 @@ class TerminalToolTeacherAnswerLazyDataset(TorchDataset):
         tokenizer,
         max_length: int | None,
         enable_thinking: bool,
+        teacher_answer_start: str,
     ) -> None:
         self.path = path
         self.refs = refs
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.enable_thinking = enable_thinking
+        self.teacher_answer_start = teacher_answer_start
 
     def __len__(self) -> int:
         return len(self.refs)
@@ -324,6 +337,7 @@ class TerminalToolTeacherAnswerLazyDataset(TorchDataset):
                     messages,
                     assistant_idx,
                     enable_thinking=self.enable_thinking,
+                    teacher_answer_start=self.teacher_answer_start,
                 )
             except TerminalToolDataError:
                 continue
@@ -350,12 +364,113 @@ class TerminalToolTeacherAnswerLazyDataset(TorchDataset):
         raise IndexError("No usable Terminus tool-calling teacher-answer records found")
 
 
+_TEACHER_REF_CACHE_VERSION = 1
+
+
+def _default_teacher_refs_cache_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".teacher_refs.v1.json")
+
+
+def _resolve_teacher_refs_cache_path(path: Path, cache: str | bool | None) -> Path | None:
+    if cache is None:
+        return _default_teacher_refs_cache_path(path)
+    if isinstance(cache, bool):
+        return _default_teacher_refs_cache_path(path) if cache else None
+    cache_str = str(cache).strip()
+    if not cache_str or cache_str.lower() in {"0", "false", "none", "null", "off"}:
+        return None
+    if cache_str.lower() in {"1", "true", "auto", "default", "on"}:
+        return _default_teacher_refs_cache_path(path)
+    return Path(cache_str).expanduser()
+
+
+def _load_teacher_refs_cache(
+    path: Path,
+    cache_path: Path,
+    offsets: list[int],
+) -> list[tuple[int, int]] | None:
+    try:
+        stat = path.stat()
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("version") != _TEACHER_REF_CACHE_VERSION:
+        return None
+    if payload.get("path") != str(path):
+        return None
+    if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
+        return None
+    selected_offsets = payload.get("offsets")
+    if selected_offsets != offsets:
+        return None
+    refs = payload.get("refs")
+    if not isinstance(refs, list):
+        return None
+    try:
+        return [(int(offset), int(assistant_idx)) for offset, assistant_idx in refs]
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_teacher_refs_cache(
+    path: Path,
+    cache_path: Path,
+    offsets: list[int],
+    refs: list[tuple[int, int]],
+) -> None:
+    tmp_path: Path | None = None
+    try:
+        stat = path.stat()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": _TEACHER_REF_CACHE_VERSION,
+            "path": str(path),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "offsets": offsets,
+            "refs": refs,
+        }
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=cache_path.parent,
+            prefix=f".{cache_path.name}.",
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+            tmp_path = Path(handle.name)
+        tmp_path.replace(cache_path)
+    except OSError:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
 def _build_teacher_refs(path: Path, offsets: list[int]) -> list[tuple[int, int]]:
     refs: list[tuple[int, int]] = []
     for offset in offsets:
         row = _read_jsonl_row(path, offset)
         for assistant_idx in _assistant_indices(row):
             refs.append((offset, assistant_idx))
+    return refs
+
+
+def _build_or_load_teacher_refs(
+    path: Path,
+    offsets: list[int],
+    cache: str | bool | None,
+) -> list[tuple[int, int]]:
+    cache_path = _resolve_teacher_refs_cache_path(path, cache)
+    if cache_path is not None:
+        cached = _load_teacher_refs_cache(path, cache_path, offsets)
+        if cached is not None:
+            return cached
+    refs = _build_teacher_refs(path, offsets)
+    if cache_path is not None:
+        _write_teacher_refs_cache(path, cache_path, offsets, refs)
     return refs
 
 
@@ -423,6 +538,8 @@ def get_terminal_teacher_answer_rl_dataset(
     holdout_size: int = 512,
     shuffle_records: bool = False,
     enable_thinking: bool = True,
+    teacher_answer_start: str = "commands",
+    teacher_refs_cache: str | bool | None = None,
     lazy_tokenize: bool = True,
     **_: Any,
 ):
@@ -435,7 +552,7 @@ def get_terminal_teacher_answer_rl_dataset(
         raise FileNotFoundError(f"converted JSONL does not exist: {jsonl_path}")
     offsets = _jsonl_offsets(jsonl_path)
     offsets = _limit_items(offsets, limit_rows)
-    refs = _build_teacher_refs(jsonl_path, offsets)
+    refs = _build_or_load_teacher_refs(jsonl_path, offsets, teacher_refs_cache)
     refs = _partition_items(
         refs,
         split_part=split_part,
@@ -452,6 +569,7 @@ def get_terminal_teacher_answer_rl_dataset(
         tokenizer,
         max_length=max_length,
         enable_thinking=enable_thinking,
+        teacher_answer_start=teacher_answer_start,
     )
     if lazy_tokenize:
         return dataset

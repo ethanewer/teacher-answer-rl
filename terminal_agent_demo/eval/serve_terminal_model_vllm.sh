@@ -35,6 +35,12 @@ export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
 LOG_DIR="${LOG_DIR:-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/terminal_bench_eval/server_logs}"
 mkdir -p "$LOG_DIR"
 
+VLLM_HELP="$("$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server --help 2>/dev/null || true)"
+DEFAULT_TOOL_CALL_PARSER="qwen3"
+if grep -q "qwen3_xml" <<<"$VLLM_HELP"; then
+  DEFAULT_TOOL_CALL_PARSER="qwen3_xml"
+fi
+
 VLLM_ARGS=(
   --model "$MODEL"
   --served-model-name "$SERVED_MODEL_NAME"
@@ -46,11 +52,14 @@ VLLM_ARGS=(
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.86}"
   --uvicorn-log-level "${UVICORN_LOG_LEVEL:-warning}"
   --enable-auto-tool-choice
-  --tool-call-parser "${TOOL_CALL_PARSER:-qwen3}"
+  --tool-call-parser "${TOOL_CALL_PARSER:-$DEFAULT_TOOL_CALL_PARSER}"
 )
 
 if [[ "${ENABLE_REASONING:-1}" == "1" ]]; then
-  VLLM_ARGS+=(--enable-reasoning --reasoning-parser "${REASONING_PARSER:-qwen3}")
+  if grep -q -- "--enable-reasoning" <<<"$VLLM_HELP"; then
+    VLLM_ARGS+=(--enable-reasoning)
+  fi
+  VLLM_ARGS+=(--reasoning-parser "${REASONING_PARSER:-qwen3}")
 fi
 
 cd "$REPO_ROOT"

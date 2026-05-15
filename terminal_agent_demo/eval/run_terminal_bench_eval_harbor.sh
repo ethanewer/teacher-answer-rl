@@ -24,6 +24,7 @@ export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 export HF_HOME="${HF_HOME:-/wbl-fast/usrs/ee/teacher-answer-rl/hf_cache}"
+export TERMINUS_TOOL_SKIP_AREAL_IMPORT=1
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker is required for the Terminal-Bench/Harbor eval workflow." >&2
@@ -51,4 +52,5 @@ cd "$REPO_ROOT"
   --model-name "$MODEL_NAME" \
   "${EXTRA_CONFIG_ARGS[@]}"
 
-exec "$REPO_ROOT/.venv/bin/harbor" run --config "$CONFIG_PATH" --yes
+exec "$REPO_ROOT/.venv/bin/python" -m terminal_agent_demo.eval.run_harbor_with_asyncio_policy \
+  run --config "$CONFIG_PATH" --yes

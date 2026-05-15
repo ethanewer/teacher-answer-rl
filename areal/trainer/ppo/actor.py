@@ -243,6 +243,18 @@ class PPOActor:
         data["kl_rewards"] = kl_rewards
         data["tot_rewards"] = rewards
         data["loss_mask"] = loss_mask
+        if "supervised_loss_mask" in data:
+            data["supervised_loss_mask"] = torch.roll(
+                data["supervised_loss_mask"].float(),
+                shifts=-1,
+                dims=-1,
+            )
+        if "supervised_loss_weight_mask" in data:
+            data["supervised_loss_weight_mask"] = torch.roll(
+                data["supervised_loss_weight_mask"].float(),
+                shifts=-1,
+                dims=-1,
+            )
         # because we have rolled old_logp by -1
         data["logprobs"] = old_logp
 
@@ -342,6 +354,13 @@ class PPOActor:
             # Get current version for proximal approximation metrics
             current_version = self.engine.get_version()
 
+            def _loss_weight(input_data: dict) -> torch.Tensor:
+                valid_tokens = input_data["loss_mask"].bool()
+                supervised_mask = input_data.get("supervised_loss_mask")
+                if supervised_mask is not None:
+                    valid_tokens = valid_tokens.logical_or(supervised_mask.bool())
+                return valid_tokens.count_nonzero()
+
             for mb in mb_inputs.mbs:
                 train_stat = self.engine.train_batch(
                     mb,
@@ -360,7 +379,7 @@ class PPOActor:
                         sapo_tau_neg=self.config.sapo_tau_neg,
                         use_decoupled_loss=self.config.use_decoupled_loss,
                     ),
-                    loss_weight_fn=lambda x: x["loss_mask"].count_nonzero(),
+                    loss_weight_fn=_loss_weight,
                 )
                 stats_tracker.scalar(**train_stat)
 
@@ -511,6 +530,21 @@ def grpo_loss_fn(
 
             rkl_stat = rkl_penalty_per_token
 
+    supervised_mask = input_data.get("supervised_loss_mask")
+    supervised_loss_stat = None
+    if supervised_mask is not None:
+        supervised_mask = supervised_mask.bool()
+        supervised_weights = input_data.get("supervised_loss_weight_mask")
+        if supervised_weights is None:
+            supervised_weights = supervised_mask.float()
+        else:
+            supervised_weights = supervised_weights.float() * supervised_mask.float()
+        supervised_denom = supervised_mask.float().sum().clamp(min=1.0)
+        supervised_loss_per_token = -logprobs * supervised_weights
+        supervised_loss = supervised_loss_per_token.sum() / supervised_denom
+        loss = loss + supervised_loss
+        supervised_loss_stat = supervised_loss_per_token
+
     # Log training statistics
     stats_tracker.denominator(
         n_tokens=infer_token_denominator(input_data, loss_mask),
@@ -518,6 +552,13 @@ def grpo_loss_fn(
         clipped_tokens=stat["clip_mask"],
         dual_clipped_tokens=stat["dual_clip_mask"],
     )
+
+    if supervised_loss_stat is not None and bool(supervised_mask.any().item()):
+        stats_tracker.denominator(supervised_valid_tokens=supervised_mask)
+        stats_tracker.stat(
+            supervised_nll_loss=supervised_loss_stat,
+            denominator="supervised_valid_tokens",
+        )
 
     if rkl_stat is not None:
         stats_tracker.stat(

@@ -21,6 +21,7 @@ import json
 import os
 import random
 import re
+import shlex
 import subprocess
 import time
 import uuid
@@ -34,6 +35,8 @@ from typing import Any
 import httpx
 
 try:
+    if os.environ.get("TERMINUS_TOOL_SKIP_AREAL_IMPORT") == "1":
+        raise ImportError("skipping AReaL imports for Harbor eval")
     from areal.api.workflow_api import RolloutWorkflow
 except Exception:  # pragma: no cover - Harbor evals do not require AReaL.
     class RolloutWorkflow:  # type: ignore[no-redef]
@@ -85,10 +88,27 @@ It is better to set a smaller duration than a longer duration. It is always poss
 Important notes:
 - Each command's keystrokes are sent exactly as written to the terminal
 - Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
+- Avoid interactive pagers and editors unless the task explicitly requires them. Prefer noninteractive commands such as `git --no-pager ...`, `cat`, `sed`, `head`, and `tail`.
 - Do not put the action JSON in visible assistant text; put all action fields in the `execute_commands` tool call arguments
 - Tool arguments must be valid JSON - use proper escaping for quotes and special characters within strings
 - Commands array can be empty if you want to wait without taking action
 """
+
+
+NONINTERACTIVE_TERMINAL_ENV = {
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-F -X",
+}
+
+
+def _terminal_env_export_command() -> str:
+    exports = " ".join(
+        f"{key}={shlex.quote(value)}"
+        for key, value in NONINTERACTIVE_TERMINAL_ENV.items()
+    )
+    return f"export {exports}\n"
 
 
 TIMEOUT_PROMPT_TEMPLATE = """Previous command:
@@ -168,6 +188,10 @@ DEFAULT_MODEL_INFO = {
 
 class TerminusToolPayloadError(ValueError):
     """Raised when execute_commands arguments do not match the Terminus shape."""
+
+
+class ContextLengthExceededError(RuntimeError):
+    """Raised when the serving backend cannot fit another generation."""
 
 
 @dataclass(frozen=True)
@@ -309,13 +333,65 @@ def payload_to_arguments(payload: ParsedPayload | dict[str, Any]) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+_TOOL_CALL_XML_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", flags=re.DOTALL)
+
+
+def _synthetic_execute_commands_tool_call(payload: ParsedPayload, *, call_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": call_id or f"call_{uuid.uuid4().hex[:24]}",
+        "type": "function",
+        "function": {
+            "name": "execute_commands",
+            "arguments": payload_to_arguments(payload),
+        },
+    }
+
+
+def _tool_call_from_assistant_content(content: str | None) -> dict[str, Any] | None:
+    if not isinstance(content, str) or not content.strip():
+        return None
+
+    for match in _TOOL_CALL_XML_RE.finditer(content):
+        raw = match.group(1).strip()
+        try:
+            call_payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(call_payload, dict):
+            continue
+        name = call_payload.get("name")
+        arguments = call_payload.get("arguments", {})
+        if name != "execute_commands":
+            continue
+        try:
+            parsed = parse_execute_commands_arguments(arguments)
+        except TerminusToolPayloadError:
+            continue
+        return _synthetic_execute_commands_tool_call(parsed)
+
+    try:
+        parsed = parse_terminus_json_payload(content)
+    except TerminusToolPayloadError:
+        return None
+    return _synthetic_execute_commands_tool_call(parsed)
+
+
 def _first_tool_call(message: Any) -> Any | None:
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls is None and isinstance(message, dict):
         tool_calls = message.get("tool_calls")
-    if not tool_calls:
+    if tool_calls:
+        return tool_calls[0]
+
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    return _tool_call_from_assistant_content(content)
+
+
+def _message_content_without_tool_call(content: str | None) -> str | None:
+    if content is None:
         return None
-    return tool_calls[0]
+    cleaned = _TOOL_CALL_XML_RE.sub("", content).strip()
+    return cleaned or None
 
 
 def _tool_call_id(tool_call: Any) -> str:
@@ -352,6 +428,112 @@ def _message_to_dict(message: Any) -> dict[str, Any]:
         if tool_calls:
             data["tool_calls"] = [tc.model_dump(exclude_none=True) if hasattr(tc, "model_dump") else tc for tc in tool_calls]
     data.setdefault("role", "assistant")
+    return data
+
+
+_CONTEXT_LENGTH_RE = re.compile(
+    r"You passed (\d+) input tokens and requested (\d+) output tokens.*context length is only (\d+) tokens",
+    flags=re.DOTALL,
+)
+
+
+def _context_length_retry_body(body: dict[str, Any], response_text: str) -> dict[str, Any] | None:
+    match = _CONTEXT_LENGTH_RE.search(response_text)
+    if match is None:
+        return None
+    input_tokens, requested_tokens, context_tokens = (int(group) for group in match.groups())
+    remaining = context_tokens - input_tokens
+    if remaining <= 0 or remaining >= requested_tokens:
+        return None
+    reserve = int(os.environ.get("TERMINUS_TOOL_CONTEXT_RETRY_RESERVE", "1536"))
+    retry_body = dict(body)
+    retry_body["max_tokens"] = max(1, remaining - max(reserve, 0) - 8)
+    return retry_body
+
+
+def _is_context_length_error(response_text: str) -> bool:
+    return _CONTEXT_LENGTH_RE.search(response_text) is not None
+
+
+def _assistant_recovery_message(message: Any, error: str) -> dict[str, Any]:
+    data = _message_to_dict(message)
+    content = data.get("content")
+    if isinstance(content, str) and content.strip():
+        content = content.strip() + "\n\n"
+    else:
+        content = ""
+    recovery = {
+        "role": "assistant",
+        "content": (
+            content
+            + "Previous response had parsing errors:\n"
+            + f"ERROR: {error}\n\n"
+            + "Please fix these issues and provide a proper tool call."
+        ),
+    }
+    if data.get("reasoning_content"):
+        recovery["reasoning_content"] = data["reasoning_content"]
+    return recovery
+
+
+def _synthetic_recovery_tool_turn(error: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Represent recovery feedback as a paired assistant/tool turn.
+
+    A real user message would make Qwen thinking templates treat the error as
+    the latest query and strip earlier reasoning. An unpaired tool message is
+    invalid for several OpenAI-compatible servers. A synthetic empty
+    execute_commands call keeps the history append-only and preserves normal
+    assistant/tool alternation without executing shell commands.
+    """
+    call_id = f"call_recovery_{uuid.uuid4().hex[:16]}"
+    assistant = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "execute_commands",
+                    "arguments": payload_to_arguments(
+                        {
+                            "analysis": "The previous response could not be used.",
+                            "plan": "Retry with a valid execute_commands tool call.",
+                            "commands": [],
+                            "task_complete": False,
+                        }
+                    ),
+                },
+            }
+        ],
+    }
+    tool = tool_response_message(
+        call_id,
+        "Previous response had parsing errors:\n"
+        f"ERROR: {error}\n\n"
+        "Please fix these issues and provide a proper execute_commands tool call.",
+    )
+    return assistant, tool
+
+
+def _assistant_tool_message_from_parsed_payload(
+    message: Any,
+    tool_call: Any,
+    payload: ParsedPayload,
+) -> dict[str, Any]:
+    data = _message_to_dict(message)
+    data["role"] = "assistant"
+    data["content"] = _message_content_without_tool_call(data.get("content"))
+    data["tool_calls"] = [
+        {
+            "id": _tool_call_id(tool_call),
+            "type": "function",
+            "function": {
+                "name": "execute_commands",
+                "arguments": payload_to_arguments(payload),
+            },
+        }
+    ]
     return data
 
 
@@ -833,6 +1015,13 @@ class _CliTerminal:
         )
         self._sessions[session_name] = session
         session.start()
+        session.send_keys(
+            [_terminal_env_export_command()],
+            block=True,
+            min_timeout_sec=0.1,
+            max_timeout_sec=5.0,
+        )
+        session.get_incremental_output()
         return session
 
     def get_session(self, session_name: str) -> Any:
@@ -1023,33 +1212,13 @@ class TerminusToolTerminalTaskRunner:
     def _commands_for_base_runner(payload: ParsedPayload) -> list[dict[str, Any]]:
         return [{"keystrokes": command.keystrokes, "duration": command.duration} for command in payload.commands]
 
-    async def _handle_tool_call(self, messages: list[dict[str, Any]], tool_call: Any) -> bool:
+    async def _handle_tool_call(
+        self,
+        messages: list[dict[str, Any]],
+        tool_call: Any,
+        payload: ParsedPayload,
+    ) -> bool:
         call_id = _tool_call_id(tool_call)
-        name = _tool_call_name(tool_call)
-        if name != "execute_commands":
-            messages.append(
-                tool_response_message(
-                    call_id,
-                    "Previous response had parsing errors:\n"
-                    f"ERROR: Unknown tool: {name}\n\n"
-                    "Please fix these issues and provide a proper tool call.",
-                )
-            )
-            return False
-
-        try:
-            payload = parse_execute_commands_arguments(_tool_call_arguments(tool_call))
-        except TerminusToolPayloadError as exc:
-            messages.append(
-                tool_response_message(
-                    call_id,
-                    "Previous response had parsing errors:\n"
-                    f"ERROR: {exc}\n\n"
-                    "Please fix these issues and provide a proper tool call.",
-                )
-            )
-            return False
-
         observation = await self.run_in_executor(
             self._execute_commands,
             self._commands_for_base_runner(payload),
@@ -1110,25 +1279,25 @@ class TerminusToolTerminalTaskRunner:
                         extra_body={"chat_template_kwargs": {"enable_thinking": True}},
                     )
                     message = response.choices[0].message
-                    messages.append(_message_to_dict(message))
                     tool_call = _first_tool_call(message)
                     if tool_call is None:
-                        # Keep recovery feedback as an assistant turn. A new
-                        # user message makes Qwen thinking templates treat the
-                        # error as the latest query and strip prior reasoning;
-                        # an unpaired tool message can be rejected by servers.
-                        messages.append(
-                            {
-                                "role": "assistant",
-                                "content": (
-                                    "Previous response had parsing errors:\n"
-                                    "ERROR: No execute_commands tool call was produced.\n\n"
-                                    "Please fix these issues and provide a proper tool call."
-                                ),
-                            }
+                        messages.extend(
+                            _synthetic_recovery_tool_turn(
+                                "No execute_commands tool call was produced."
+                            )
                         )
                         continue
-                    if await self._handle_tool_call(messages, tool_call):
+                    name = _tool_call_name(tool_call)
+                    if name != "execute_commands":
+                        messages.extend(_synthetic_recovery_tool_turn(f"Unknown tool: {name}"))
+                        continue
+                    try:
+                        payload = parse_execute_commands_arguments(_tool_call_arguments(tool_call))
+                    except TerminusToolPayloadError as exc:
+                        messages.extend(_synthetic_recovery_tool_turn(str(exc)))
+                        continue
+                    messages.append(_assistant_tool_message_from_parsed_payload(message, tool_call, payload))
+                    if await self._handle_tool_call(messages, tool_call, payload):
                         break
 
                 async with atrace_session_phase(
@@ -1307,7 +1476,8 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         self._tmux_pane_width = tmux_pane_width
         self._tmux_pane_height = tmux_pane_height
         self._llm_kwargs = dict(llm_kwargs or {})
-        self._extra_env = extra_env
+        self._extra_env = dict(NONINTERACTIVE_TERMINAL_ENV)
+        self._extra_env.update(extra_env or {})
         self._session: Any = None
         self._pending_completion = False
         self._prompt_tokens = 0
@@ -1343,6 +1513,12 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             user=environment.default_user,
         )
         await self._session.start()
+        await self._session.send_keys(
+            _terminal_env_export_command(),
+            block=True,
+            min_timeout_sec=0.1,
+        )
+        await self._session.get_incremental_output()
 
     async def _call_llm(self, messages: list[dict[str, Any]], logging_path: Path | None) -> dict[str, Any]:
         body = {
@@ -1366,25 +1542,55 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(
-                f"{self._api_base}/chat/completions",
-                headers=headers,
-                json=body,
-            )
-        if logging_path is not None:
-            logging_path.write_text(response.text, encoding="utf-8")
-        if response.status_code >= 400 and "tool_choice" in body:
-            retry_body = dict(body)
-            retry_body.pop("tool_choice", None)
+        current_body = body
+
+        async def post_once(request_body: dict[str, Any], path: Path | None) -> httpx.Response:
             async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.post(
+                result = await client.post(
                     f"{self._api_base}/chat/completions",
                     headers=headers,
-                    json=retry_body,
+                    json=request_body,
                 )
-            if logging_path is not None:
-                logging_path.with_suffix(".retry.json").write_text(response.text, encoding="utf-8")
+            if path is not None:
+                path.write_text(result.text, encoding="utf-8")
+            return result
+
+        response = await post_once(current_body, logging_path)
+        context_retry_body = _context_length_retry_body(current_body, response.text) if response.status_code >= 400 else None
+        if context_retry_body is not None:
+            current_body = context_retry_body
+            response = await post_once(
+                current_body,
+                logging_path.with_suffix(".context_retry.json") if logging_path is not None else None,
+            )
+        context_retry_body = _context_length_retry_body(current_body, response.text) if response.status_code >= 400 else None
+        if context_retry_body is not None:
+            current_body = context_retry_body
+            response = await post_once(
+                current_body,
+                logging_path.with_suffix(".context_retry2.json") if logging_path is not None else None,
+            )
+        if response.status_code >= 400 and "tool_choice" in current_body:
+            retry_body = dict(current_body)
+            retry_body.pop("tool_choice", None)
+            response = await post_once(
+                retry_body,
+                logging_path.with_suffix(".retry.json") if logging_path is not None else None,
+            )
+            context_retry_body = _context_length_retry_body(retry_body, response.text) if response.status_code >= 400 else None
+            if context_retry_body is not None:
+                response = await post_once(
+                    context_retry_body,
+                    logging_path.with_suffix(".retry_context.json") if logging_path is not None else None,
+                )
+                context_retry_body = _context_length_retry_body(context_retry_body, response.text) if response.status_code >= 400 else None
+                if context_retry_body is not None:
+                    response = await post_once(
+                        context_retry_body,
+                        logging_path.with_suffix(".retry_context2.json") if logging_path is not None else None,
+                    )
+        if response.status_code >= 400 and _is_context_length_error(response.text):
+            raise ContextLengthExceededError(response.text[:1000])
         response.raise_for_status()
         payload = response.json()
         usage = payload.get("usage") or {}
@@ -1416,45 +1622,39 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         initial_state = await self._session.get_incremental_output()
         messages = build_initial_messages(instruction, terminal_state=initial_state)
         self._messages = messages
+        stop_reason = "max_turns"
 
         for turn in range(self._max_turns):
             response_path = self.logs_dir / f"turn-{turn:03d}-response.json"
-            message = await self._call_llm(messages, response_path)
-            messages.append(_message_to_dict(message))
+            try:
+                message = await self._call_llm(messages, response_path)
+            except ContextLengthExceededError:
+                stop_reason = "context_length_exceeded"
+                break
             tool_call = _first_tool_call(message)
             if tool_call is None:
-                # Keep recovery feedback as an assistant turn. A new user
-                # message makes Qwen thinking templates treat the error as the
-                # latest query and strip prior reasoning; an unpaired tool
-                # message can be rejected by servers.
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": (
-                            "Previous response had parsing errors:\n"
-                            "ERROR: No execute_commands tool call was produced.\n\n"
-                            "Please fix these issues and provide a proper tool call."
-                        ),
-                    }
-                )
-                continue
-            call_id = _tool_call_id(tool_call)
-            try:
-                payload = parse_execute_commands_arguments(_tool_call_arguments(tool_call))
-            except TerminusToolPayloadError as exc:
-                messages.append(
-                    tool_response_message(
-                        call_id,
-                        "Previous response had parsing errors:\n"
-                        f"ERROR: {exc}\n\n"
-                        "Please fix these issues and provide a proper tool call.",
+                messages.extend(
+                    _synthetic_recovery_tool_turn(
+                        "No execute_commands tool call was produced."
                     )
                 )
                 continue
+            call_id = _tool_call_id(tool_call)
+            name = _tool_call_name(tool_call)
+            if name != "execute_commands":
+                messages.extend(_synthetic_recovery_tool_turn(f"Unknown tool: {name}"))
+                continue
+            try:
+                payload = parse_execute_commands_arguments(_tool_call_arguments(tool_call))
+            except TerminusToolPayloadError as exc:
+                messages.extend(_synthetic_recovery_tool_turn(str(exc)))
+                continue
+            messages.append(_assistant_tool_message_from_parsed_payload(message, tool_call, payload))
             observation = await self._execute_commands(payload)
             if payload.task_complete:
                 if self._pending_completion:
                     messages.append(tool_response_message(call_id, observation))
+                    stop_reason = "task_complete"
                     break
                 self._pending_completion = True
                 observation = completion_confirmation_message(observation)
@@ -1466,7 +1666,7 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         context.n_output_tokens = self._completion_tokens
         context.n_cache_tokens = 0
         context.cost_usd = 0.0
-        context.metadata = {"message_count": len(messages), "agent": self.name()}
+        context.metadata = {"message_count": len(messages), "agent": self.name(), "stop_reason": stop_reason}
 
 
 def _find_arrow_files(cache_root: Path, config: str) -> list[Path]:
