@@ -153,10 +153,7 @@ easy-10 split.
 | --- | --- | --- | --- |
 | Qwen3-4B-Thinking base | `Qwen/Qwen3-4B-Thinking-2507` | 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
 | SFT medium even rows | `epoch0epochstep1384globalstep1384` | 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
-| Robust teacher-answer-RL | `ta-ref-lenpen-w25-p128-syn08-o2048-s50`, step 19 | 1 trial/task, first eval | 3/10 = 30% |
-| Robust teacher-answer-RL | same step 19 checkpoint | 1 trial/task, eval rerun | 3/10 = 30% |
-| Robust teacher-answer-RL full rerun | `ta-ref-lenpen-w25-p128-syn08-o2048-s50-repro1`, step 24 | 1 trial/task | 3/10 = 30% |
-| Robust teacher-answer-RL full rerun | `ta-ref-lenpen-w25-p128-syn08-o2048-s50-repro1`, step 44 | 1 trial/task | 3/10 = 30% |
+| Teacher-answer-RL default recipe | `ta-ref-lenpen-w25-p128-syn08-o2048-s50`, selected step 19 | 5 trials/task, `ta-ref-lenpen-current-s19-easy10-t4096-a5-local-20260515` | 10/50 = 20% |
 
 The default teacher-answer-RL recipe is:
 
