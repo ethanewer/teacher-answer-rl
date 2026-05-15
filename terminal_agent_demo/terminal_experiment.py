@@ -47,7 +47,8 @@ def _cmd_write_harbor_eval_config(args: argparse.Namespace) -> None:
         "quiet": False,
         "environment": {
             "type": args.environment,
-            "delete": True,
+            "force_build": args.environment_force_build,
+            "delete": args.environment_delete,
             "override_cpus": args.override_cpus,
             "override_memory_mb": args.override_memory_mb,
         },
@@ -218,6 +219,8 @@ def main() -> None:
         default=Path("/wbl-fast/usrs/ee/teacher-answer-rl/harbor_datasets/terminal-bench"),
     )
     eval_cfg.add_argument("--environment", default="docker")
+    eval_cfg.add_argument("--environment-force-build", action=argparse.BooleanOptionalAction, default=False)
+    eval_cfg.add_argument("--environment-delete", action=argparse.BooleanOptionalAction, default=True)
     eval_cfg.add_argument("--task", action="append")
     eval_cfg.add_argument("--n-attempts", type=int, default=5)
     eval_cfg.add_argument("--n-concurrent", type=int, default=5)
