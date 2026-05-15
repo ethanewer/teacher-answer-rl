@@ -115,10 +115,13 @@ AReaL/terminal_agent_demo/grpo/run_even_medium_real.sh
 ```
 
 The SFT recipe trains full converted trajectories with sequence packing at 32k
-context and about 0.5M-0.7M tokens per update. The teacher-answer-RL recipe is a
-turn-level method: it uses the same even-row trajectories, expands them into
-assistant-turn prompts, samples 32 prompts with 2 completions per prompt, and
-uses Terminal-Bench-style GRPO settings with 32k context.
+context and about 0.5M-0.7M tokens per update. The default teacher-answer-RL
+recipe starts from the final SFT checkpoint, trains on odd medium rows, and uses
+the robust full-turn teacher-answer method: reference-model teacher-answer
+scoring from the tool-call span, group-normalized rewards, a small supervised
+teacher-answer prefix loss on thinking tokens, tool-call syntax reward, and
+length penalties. It samples 16 prompts with 2 completions per prompt at 32k
+context and 2048 max new tokens.
 
 The real GRPO recipe uses `nvidia/Nemotron-Terminal-Synthetic-Tasks`, intersected
 with the same even-row source task IDs used by SFT and teacher-answer-RL. It
@@ -139,6 +142,32 @@ Terminal-Bench evaluation:
 ```bash
 terminal_agent_demo/eval/serve_terminal_model_vllm.sh /path/to/checkpoint terminal-local 30080
 terminal_agent_demo/eval/run_terminal_bench_easy10_split_slurm_cpu.sh eval-name openai/terminal-local http://127.0.0.1:30080/v1
+```
+
+## Confirmed Results
+
+Terminal-Bench scores below use the Terminus tool-calling Harbor harness and the
+easy-10 split.
+
+| Model / recipe | Checkpoint | Eval setting | Score |
+| --- | --- | --- | --- |
+| Qwen3-4B-Thinking base | `Qwen/Qwen3-4B-Thinking-2507` | 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
+| SFT medium even rows | `epoch0epochstep1384globalstep1384` | 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
+| Robust teacher-answer-RL | `ta-ref-lenpen-w25-p128-syn08-o2048-s50`, step 19 | 1 trial/task, first eval | 3/10 = 30% |
+| Robust teacher-answer-RL | same step 19 checkpoint | 1 trial/task, eval rerun | 3/10 = 30% |
+| Robust teacher-answer-RL full rerun | `ta-ref-lenpen-w25-p128-syn08-o2048-s50-repro1`, step 24 | 1 trial/task | 3/10 = 30% |
+| Robust teacher-answer-RL full rerun | `ta-ref-lenpen-w25-p128-syn08-o2048-s50-repro1`, step 44 | 1 trial/task | 3/10 = 30% |
+
+The default teacher-answer-RL recipe is:
+
+```text
+AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml
+```
+
+It matches the successful robust recipe:
+
+```text
+AReaL/terminal_agent_demo/teacher_answer_rl/config_odd_medium_from_sft_refscore_lenpen_w25_p128_syn08_o2048_local_s50.yaml
 ```
 
 ## Current Smoke Status
