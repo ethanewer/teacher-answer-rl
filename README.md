@@ -116,12 +116,10 @@ AReaL/terminal_agent_demo/grpo/run_even_medium_real.sh
 
 The SFT recipe trains full converted trajectories with sequence packing at 32k
 context and about 0.5M-0.7M tokens per update. The default teacher-answer-RL
-recipe starts from the final SFT checkpoint, trains on odd medium rows, and uses
-the robust full-turn teacher-answer method: reference-model teacher-answer
-scoring from the tool-call span, group-normalized rewards, a small supervised
-teacher-answer prefix loss on thinking tokens, tool-call syntax reward, and
-length penalties. It samples 16 prompts with 2 completions per prompt at 32k
-context and 2048 max new tokens.
+recipe is the current easy-task command-presence recipe: RL-only
+teacher-answer scoring from the tool-call span, group-normalized rewards,
+command overlap/presence/completion rewards, tool-call syntax reward, and length
+penalties. It does not apply supervised teacher-answer loss.
 
 The comparable GRPO recipe starts from the final SFT checkpoint and trains on
 odd medium synthetic-task rows matched to the teacher-answer-RL setup. It runs
@@ -153,7 +151,7 @@ easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
 | --- | --- | --- | --- |
 | Base | `Qwen/Qwen3-4B-Thinking-2507` | easy-10, 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
 | SFT | `epoch0epochstep1384globalstep1384` | easy-10, 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
-| SFT + teacher-answer-RL | `ta-ref-lenpen-w25-p128-syn08-o2048-s50`, selected step 19 | easy-10, 5 trials/task, `ta-ref-lenpen-current-s19-easy10-t4096-a5-local-20260515` | 10/50 = 20% |
+| SFT + teacher-answer-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-easy10-a5-o2048-r1` | 17/50 = 34% |
 | SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
 
 The default teacher-answer-RL recipe is:
@@ -162,11 +160,8 @@ The default teacher-answer-RL recipe is:
 AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml
 ```
 
-It matches the successful robust recipe:
-
-```text
-AReaL/terminal_agent_demo/teacher_answer_rl/config_odd_medium_from_sft_refscore_lenpen_w25_p128_syn08_o2048_local_s50.yaml
-```
+It is the RL-only command-presence/completion recipe used for the confirmed
+SFT + teacher-answer-RL result above.
 
 The SFT + GRPO row uses:
 
