@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 import json
+import re
+from collections import Counter
 from typing import Any
 
 import torch
@@ -23,6 +25,7 @@ from terminal_agent_demo.teacher_answer_rl.reward import (
 )
 from terminal_agent_demo.terminus_tool_calling import (
     EXECUTE_COMMANDS_TOOL,
+    ParsedPayload,
     TerminusToolPayloadError,
     parse_execute_commands_arguments,
 )
@@ -82,22 +85,170 @@ def _tool_call_end_token_len(tokenizer, output_text: str, output_len: int) -> in
 
 
 def _parse_generated_tool_call(output_text: str) -> bool:
+    return _parse_tool_call_payload(output_text) is not None
+
+
+def _parse_tool_call_payload(output_text: str) -> ParsedPayload | None:
     start = output_text.find("<tool_call>")
     if start < 0 or "</tool_call>" not in output_text[start:]:
-        return False
+        return None
     decoder = json.JSONDecoder()
     payload_text = output_text[start + len("<tool_call>") :].lstrip()
     try:
         payload, _ = decoder.raw_decode(payload_text)
     except Exception:
-        return False
+        return None
     if not isinstance(payload, dict) or payload.get("name") != "execute_commands":
-        return False
+        return None
     try:
-        parse_execute_commands_arguments(payload.get("arguments", {}))
+        return parse_execute_commands_arguments(payload.get("arguments", {}))
     except TerminusToolPayloadError:
-        return False
-    return True
+        return None
+
+
+def _parse_partial_teacher_payload(text: str) -> ParsedPayload | None:
+    full_payload = _parse_tool_call_payload(text)
+    if full_payload is not None:
+        return full_payload
+
+    start = text.find('"commands"')
+    if start < 0:
+        return None
+    fragment = text[start:]
+    end = fragment.find("</tool_call>")
+    if end >= 0:
+        fragment = fragment[:end]
+    fragment = fragment.strip()
+    decoder = json.JSONDecoder()
+    for candidate in ("{" + fragment, '{"analysis":"","plan":",' + fragment):
+        try:
+            payload, _ = decoder.raw_decode(candidate)
+        except Exception:
+            continue
+        try:
+            return parse_execute_commands_arguments(payload)
+        except TerminusToolPayloadError:
+            continue
+    return None
+
+
+_COMMAND_TOKEN_RE = re.compile(r"[A-Za-z0-9_./:+-]+")
+_KEYSTROKES_RE = re.compile(r'"keystrokes"\s*:\s*"((?:\\.|[^"\\])*)"')
+
+
+def _command_text_from_payload(payload: ParsedPayload | None) -> str:
+    if payload is None:
+        return ""
+    return "\n".join(
+        command.keystrokes.strip()
+        for command in payload.commands
+        if command.keystrokes.strip()
+    )
+
+
+def _partial_command_list(text: str) -> list[str]:
+    """Extract keystroke strings even when the surrounding tool JSON is partial."""
+    payload = _parse_partial_teacher_payload(text)
+    if payload is not None:
+        return [
+            command.keystrokes
+            for command in payload.commands
+            if command.keystrokes.strip()
+        ]
+
+    commands: list[str] = []
+    for match in _KEYSTROKES_RE.finditer(text):
+        encoded = '"' + match.group(1) + '"'
+        try:
+            decoded = json.loads(encoded)
+        except Exception:
+            decoded = match.group(1)
+        decoded = str(decoded).strip()
+        if decoded:
+            commands.append(decoded)
+    return commands
+
+
+def _partial_command_text(text: str) -> str:
+    return "\n".join(command.strip() for command in _partial_command_list(text))
+
+
+def _normal_command_text(command: str) -> str:
+    return " ".join(command.strip().split())
+
+
+def _previous_command_list(data: dict[str, Any]) -> list[str]:
+    commands: list[str] = []
+    for message in data.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        for raw_call in message.get("tool_calls") or []:
+            if not isinstance(raw_call, dict):
+                continue
+            function = raw_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            if function.get("name") != "execute_commands":
+                continue
+            try:
+                payload = parse_execute_commands_arguments(
+                    function.get("arguments", {})
+                )
+            except TerminusToolPayloadError:
+                continue
+            commands.extend(
+                command.keystrokes
+                for command in payload.commands
+                if command.keystrokes.strip()
+            )
+        if message.get("role") == "assistant":
+            content = message.get("content")
+            if isinstance(content, str):
+                commands.extend(_partial_command_list(content))
+    return commands
+
+
+def _command_repeat_fraction(
+    generated_commands: list[str],
+    previous_commands: list[str],
+) -> float:
+    generated = [
+        _normal_command_text(command)
+        for command in generated_commands
+        if command.strip()
+    ]
+    if not generated:
+        return 0.0
+    previous = {
+        _normal_command_text(command)
+        for command in previous_commands
+        if command.strip()
+    }
+    if not previous:
+        return 0.0
+    return sum(1.0 for command in generated if command in previous) / len(generated)
+
+
+def _command_token_f1(generated_text: str, teacher_text: str) -> float:
+    if not generated_text or not teacher_text:
+        return 0.0
+    generated_tokens = Counter(
+        token.lower() for token in _COMMAND_TOKEN_RE.findall(generated_text)
+    )
+    teacher_tokens = Counter(
+        token.lower() for token in _COMMAND_TOKEN_RE.findall(teacher_text)
+    )
+    if not generated_tokens or not teacher_tokens:
+        return 0.0
+    overlap = sum(
+        min(generated_tokens[token], teacher_tokens[token])
+        for token in generated_tokens.keys() & teacher_tokens.keys()
+    )
+    if overlap <= 0:
+        return 0.0
+    precision = overlap / sum(generated_tokens.values())
+    recall = overlap / sum(teacher_tokens.values())
+    return float(2.0 * precision * recall / max(precision + recall, 1e-12))
 
 
 def _teacher_answer_score_mask(
@@ -289,6 +440,17 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
         drop_invalid_teacher_row_loss: bool = False,
         syntax_thinking_length_penalty_weight: float = 0.0,
         syntax_output_length_penalty_weight: float = 0.0,
+        syntax_length_penalty_requires_invalid: bool = False,
+        teacher_command_match_reward_weight: float = 0.0,
+        teacher_command_presence_reward_weight: float = 0.0,
+        teacher_command_newline_reward_weight: float = 0.0,
+        teacher_completion_match_reward_weight: float = 0.0,
+        teacher_completion_requires_valid_syntax: bool = False,
+        teacher_empty_completion_reward_weight: float = 0.0,
+        teacher_command_count_reward_weight: float = 0.0,
+        teacher_repeated_command_penalty_weight: float = 0.0,
+        tool_call_scaffold_reward_weight: float = 0.0,
+        invalid_teacher_loss_span: str = "default",
     ):
         self.tokenizer = tokenizer
         if isinstance(self.tokenizer, str):
@@ -330,6 +492,50 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
         self.syntax_output_length_penalty_weight = float(
             syntax_output_length_penalty_weight
         )
+        self.syntax_length_penalty_requires_invalid = bool(
+            syntax_length_penalty_requires_invalid
+        )
+        self.teacher_command_match_reward_weight = float(
+            teacher_command_match_reward_weight
+        )
+        self.teacher_command_presence_reward_weight = float(
+            teacher_command_presence_reward_weight
+        )
+        self.teacher_command_newline_reward_weight = float(
+            teacher_command_newline_reward_weight
+        )
+        self.teacher_completion_match_reward_weight = float(
+            teacher_completion_match_reward_weight
+        )
+        self.teacher_completion_requires_valid_syntax = bool(
+            teacher_completion_requires_valid_syntax
+        )
+        self.teacher_empty_completion_reward_weight = float(
+            teacher_empty_completion_reward_weight
+        )
+        self.teacher_command_count_reward_weight = float(
+            teacher_command_count_reward_weight
+        )
+        self.teacher_repeated_command_penalty_weight = float(
+            teacher_repeated_command_penalty_weight
+        )
+        self.tool_call_scaffold_reward_weight = float(
+            tool_call_scaffold_reward_weight
+        )
+        self.invalid_teacher_loss_span = (
+            invalid_teacher_loss_span.strip().lower().replace("-", "_")
+        )
+        if self.invalid_teacher_loss_span not in {
+            "default",
+            "none",
+            "thinking",
+            "tool_call",
+            "full_turn",
+            "output",
+        }:
+            raise ValueError(
+                f"unsupported invalid_teacher_loss_span: {invalid_teacher_loss_span}"
+            )
         self.command_key_patterns = terminal_command_key_patterns(self.tokenizer)
 
     def _input_ids(self, data: dict[str, Any]) -> list[int]:
@@ -422,18 +628,115 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
         output_len = len(output_tokens)
         thinking_len = min(thinking_len, output_len)
         context_len = resp.input_len + thinking_len
-        syntax_ok = _parse_generated_tool_call(output_text)
+        generated_payload = _parse_tool_call_payload(output_text)
+        syntax_ok = generated_payload is not None
+        teacher_answer = str(data["teacher_answer"]).rstrip()
+        teacher_payload = _parse_partial_teacher_payload(teacher_answer)
+        teacher_commands = _partial_command_list(teacher_answer)
+        generated_commands = _partial_command_list(output_text)
+        previous_commands = _previous_command_list(data)
+        teacher_command_text = "\n".join(
+            command.strip() for command in teacher_commands
+        )
+        generated_command_text = "\n".join(
+            command.strip() for command in generated_commands
+        )
+        command_overlap = _command_token_f1(generated_command_text, teacher_command_text)
+        command_match_reward = (
+            self.teacher_command_match_reward_weight * command_overlap
+        )
+        teacher_has_command = bool(teacher_command_text)
+        generated_has_command = bool(generated_command_text)
+        command_presence_reward = 0.0
+        if teacher_has_command and self.teacher_command_presence_reward_weight:
+            command_presence_reward = self.teacher_command_presence_reward_weight * (
+                1.0 if generated_has_command else -1.0
+            )
+        command_newline_reward = 0.0
+        if teacher_has_command and self.teacher_command_newline_reward_weight:
+            executable_commands = [
+                command for command in generated_commands if command.strip()
+            ]
+            if executable_commands:
+                newline_ratio = sum(
+                    1.0 for command in executable_commands if command.endswith("\n")
+                ) / len(executable_commands)
+                command_newline_reward = (
+                    self.teacher_command_newline_reward_weight * newline_ratio
+                )
+            else:
+                command_newline_reward = -self.teacher_command_newline_reward_weight
+        teacher_task_complete = bool(
+            teacher_payload.task_complete if teacher_payload is not None else False
+        )
+        generated_task_complete = bool(
+            generated_payload.task_complete if generated_payload is not None else False
+        )
+        completion_match_reward = 0.0
+        if self.teacher_completion_match_reward_weight and (
+            syntax_ok or not self.teacher_completion_requires_valid_syntax
+        ):
+            completion_match_reward = self.teacher_completion_match_reward_weight * (
+                1.0 if generated_task_complete == teacher_task_complete else -1.0
+            )
+        empty_completion_reward = 0.0
+        if self.teacher_empty_completion_reward_weight and teacher_task_complete:
+            teacher_empty_completion = not teacher_has_command
+            generated_empty_completion = generated_task_complete and not generated_has_command
+            if teacher_empty_completion:
+                empty_completion_reward = self.teacher_empty_completion_reward_weight * (
+                    1.0 if generated_empty_completion else -1.0
+                )
+        command_count_reward = 0.0
+        if self.teacher_command_count_reward_weight and teacher_has_command:
+            teacher_count = len([command for command in teacher_commands if command.strip()])
+            generated_count = len([command for command in generated_commands if command.strip()])
+            if teacher_count > 0:
+                count_similarity = 1.0 - min(
+                    abs(generated_count - teacher_count) / max(float(teacher_count), 1.0),
+                    1.0,
+                )
+                command_count_reward = (
+                    self.teacher_command_count_reward_weight * count_similarity
+                )
+        command_repeat_fraction = _command_repeat_fraction(
+            generated_commands,
+            previous_commands,
+        )
+        repeated_command_penalty = (
+            self.teacher_repeated_command_penalty_weight
+            * command_repeat_fraction
+        )
+        tool_call_start = output_text.find("<tool_call>")
+        if tool_call_start >= 0:
+            tool_call_fragment = output_text[tool_call_start:]
+        else:
+            tool_call_fragment = output_text
+        tool_call_scaffold_progress = (
+            float(tool_call_start >= 0)
+            + float("</tool_call>" in tool_call_fragment)
+            + float("execute_commands" in tool_call_fragment)
+            + float('"commands"' in tool_call_fragment)
+        ) / 4.0
+        tool_call_scaffold_reward = self.tool_call_scaffold_reward_weight * (
+            2.0 * tool_call_scaffold_progress - 1.0
+        )
         max_new_tokens = max(float(getattr(self.gconfig, "max_new_tokens", 1) or 1), 1.0)
         syntax_base_reward = self.syntax_reward_weight * (
             self.valid_syntax_reward if syntax_ok else self.invalid_syntax_reward
         )
+        use_syntax_length_penalty = (
+            not self.syntax_length_penalty_requires_invalid or not syntax_ok
+        )
         syntax_thinking_length_penalty = (
             self.syntax_thinking_length_penalty_weight
             * (float(thinking_len) / max_new_tokens)
+            * float(use_syntax_length_penalty)
         )
         syntax_output_length_penalty = (
             self.syntax_output_length_penalty_weight
             * (float(output_len) / max_new_tokens)
+            * float(use_syntax_length_penalty)
         )
         syntax_reward = (
             syntax_base_reward
@@ -443,7 +746,6 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
         include_teacher_answer = (
             syntax_ok or not self.teacher_reward_requires_valid_syntax
         )
-        teacher_answer = str(data["teacher_answer"]).rstrip()
         supervised_answer_ids: list[int] = []
         supervised_answer_mask: list[int] = []
         if self.supervise_teacher_answer and self.teacher_answer_supervised_weight != 0.0:
@@ -469,6 +771,21 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
                 )
             else:
                 teacher_mask = [0] * resp.input_len + [1] * output_len
+        if not syntax_ok and self.invalid_teacher_loss_span != "default":
+            if self.invalid_teacher_loss_span == "none":
+                teacher_mask = [0] * len(teacher_mask)
+            elif self.invalid_teacher_loss_span == "thinking":
+                teacher_mask = (
+                    [0] * resp.input_len
+                    + [1] * thinking_len
+                    + [0] * max(output_len - thinking_len, 0)
+                )
+            elif self.invalid_teacher_loss_span == "tool_call":
+                teacher_mask = [0] * (resp.input_len + thinking_len) + [1] * (
+                    output_len - thinking_len
+                )
+            else:
+                teacher_mask = [0] * resp.input_len + [1] * output_len
         if not syntax_ok and self.drop_invalid_teacher_row_loss:
             teacher_mask = [0] * len(teacher_mask)
         seq_rows = [teacher_seq]
@@ -477,7 +794,17 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
         masks = [teacher_mask]
         supervised_masks = [[0] * len(teacher_seq)]
         supervised_weight_masks = [[0.0] * len(teacher_seq)]
-        rewards = [syntax_reward if self.syntax_reward_on_teacher_row else 0.0]
+        rewards = [
+            command_match_reward
+            + command_presence_reward
+            + command_newline_reward
+            + completion_match_reward
+            + empty_completion_reward
+            + command_count_reward
+            - repeated_command_penalty
+            + tool_call_scaffold_reward
+            + (syntax_reward if self.syntax_reward_on_teacher_row else 0.0)
+        ]
 
         supervised_token_count = 0
         if supervised_answer_ids:
@@ -537,6 +864,8 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
             supervised_masks.append([0] * len(syntax_seq))
             supervised_weight_masks.append([0.0] * len(syntax_seq))
             rewards.append(syntax_reward)
+            if self.tool_call_scaffold_reward_weight:
+                rewards[-1] += tool_call_scaffold_reward
 
         n_rows = len(masks)
         row_lens = [len(row) for row in seq_rows]
@@ -585,10 +914,63 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
             )
         )
         stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_syntax_length_penalty_enabled=float(use_syntax_length_penalty)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
             teacher_syntax_ok=float(syntax_ok)
         )
         stats_tracker.get(workflow_context.stat_scope()).scalar(
             teacher_answer_reward_enabled=float(include_teacher_answer)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_command_match_reward=float(command_match_reward)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_command_presence_reward=float(command_presence_reward)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_command_newline_reward=float(command_newline_reward)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_command_overlap=float(command_overlap)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_command_parse_ok=float(bool(teacher_command_text))
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_generated_command_found=float(generated_has_command)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_task_complete=float(teacher_task_complete)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_generated_task_complete=float(generated_task_complete)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_completion_match_reward=float(completion_match_reward)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_completion_requires_valid_syntax=float(
+                self.teacher_completion_requires_valid_syntax
+            )
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_empty_completion_reward=float(empty_completion_reward)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_command_count_reward=float(command_count_reward)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_repeated_command_fraction=float(command_repeat_fraction)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_repeated_command_penalty=float(repeated_command_penalty)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_tool_call_scaffold_progress=float(tool_call_scaffold_progress)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_tool_call_scaffold_reward=float(tool_call_scaffold_reward)
         )
         stats_tracker.get(workflow_context.stat_scope()).scalar(
             teacher_invalid_row_loss_dropped=float(
@@ -615,6 +997,11 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
         )
         stats_tracker.get(workflow_context.stat_scope()).scalar(
             teacher_loss_span_tool_call=float(self.teacher_loss_span == "tool_call")
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            teacher_invalid_loss_span_output=float(
+                self.invalid_teacher_loss_span in {"full_turn", "output"}
+            )
         )
         stats_tracker.get(workflow_context.stat_scope()).scalar(
             teacher_supervised_tokens=float(supervised_token_count)

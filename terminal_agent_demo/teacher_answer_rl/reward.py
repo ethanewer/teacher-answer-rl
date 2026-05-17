@@ -207,6 +207,83 @@ def teacher_answer_reward_postprocess(
     del global_step
     format_bonus = _env_float("TEACHER_ANSWER_FORMAT_BONUS", 0.0)
     length_penalty = _env_float("TEACHER_ANSWER_LENGTH_PENALTY", 0.0)
+    logp_reward_weight = float(_config_value(trainer, "teacher_answer_logp_reward_weight", 1.0))
+    use_logp_reward = (
+        logp_reward_weight != 0.0
+        or format_bonus != 0.0
+        or length_penalty != 0.0
+    )
+
+    if not use_logp_reward:
+        traj_reward_rows: list[torch.Tensor] = []
+        traj_has_answer_rows: list[torch.Tensor] = []
+        all_adjusted_rewards: list[torch.Tensor] = []
+        all_context_lengths: list[torch.Tensor] = []
+        all_prefix_lengths: list[torch.Tensor] = []
+        all_optimized_lengths: list[torch.Tensor] = []
+        all_lengths: list[torch.Tensor] = []
+        for traj in rollout_batch:
+            rewards = _as_tensor(traj["rewards"]).float()
+            traj["rewards"] = rewards.to(dtype=torch.float32)
+            answer_mask = _as_tensor(traj["teacher_answer_mask"]).bool()
+            answer_score_mask = _as_tensor(
+                traj.get("teacher_answer_score_mask", traj["teacher_answer_mask"])
+            ).bool()
+            has_answer = (answer_score_mask & answer_mask).sum(dim=-1) > 0
+            context_mask = _as_tensor(
+                traj.get("teacher_context_mask", traj["attention_mask"])
+            )
+            prefix_mask = _as_tensor(traj["teacher_answer_prefix_mask"])
+            loss_mask = _as_tensor(traj["loss_mask"]).to(rewards.device).float()
+            traj_reward_rows.append(traj["rewards"])
+            traj_has_answer_rows.append(has_answer.detach())
+            all_adjusted_rewards.append(traj["rewards"].detach().float().cpu())
+            all_context_lengths.append(context_mask.float().sum(dim=-1).detach().cpu())
+            all_prefix_lengths.append(prefix_mask.float().sum(dim=-1).detach().cpu())
+            all_optimized_lengths.append(loss_mask.sum(dim=-1).detach().cpu())
+            all_lengths.append(answer_score_mask.float().sum(dim=-1).detach().cpu())
+
+        reward_norm_mode = str(_config_value(trainer, "teacher_answer_reward_norm", "")).lower()
+        normalized_reward_rows: list[torch.Tensor] | None = None
+        if reward_norm_mode in {"group", "grpo"}:
+            group_size = int(
+                _config_value(
+                    trainer,
+                    "teacher_answer_reward_norm_group_size",
+                    getattr(trainer.config.gconfig, "n_samples", 1),
+                )
+            )
+            normalized_reward_rows = _normalize_teacher_rows(
+                traj_reward_rows,
+                traj_has_answer_rows,
+                group_size=group_size,
+            )
+        elif reward_norm_mode not in {"", "none", "null", "false"}:
+            raise ValueError(f"unsupported teacher_answer_reward_norm: {reward_norm_mode}")
+
+        rewards_cat = torch.cat(all_adjusted_rewards)
+        stats_tracker.denominator(
+            teacher_answer_n_seqs=torch.ones_like(rewards_cat, dtype=torch.bool)
+        )
+        stat_kwargs = dict(
+            teacher_answer_logp=torch.zeros_like(rewards_cat),
+            teacher_answer_logp_reward_weight=torch.zeros_like(rewards_cat),
+            teacher_answer_reward=rewards_cat,
+            teacher_answer_len=torch.cat(all_lengths),
+            teacher_context_len=torch.cat(all_context_lengths),
+            teacher_added_prefix_len=torch.cat(all_prefix_lengths),
+            teacher_format_found=torch.zeros_like(rewards_cat),
+            teacher_optimized_len=torch.cat(all_optimized_lengths),
+            teacher_scoring_len=torch.zeros_like(rewards_cat),
+            teacher_scoring_original_len=torch.zeros_like(rewards_cat),
+            teacher_scoring_dropped_tokens=torch.zeros_like(rewards_cat),
+            teacher_scoring_truncated=torch.zeros_like(rewards_cat),
+        )
+        if normalized_reward_rows is not None:
+            stat_kwargs["teacher_answer_reward_normed"] = torch.cat(normalized_reward_rows)
+        stats_tracker.stat(**stat_kwargs, denominator="teacher_answer_n_seqs")
+        return
+
     scorer_name = str(_config_value(trainer, "teacher_answer_scorer", "actor")).lower()
     scorer = getattr(trainer, scorer_name, None) if scorer_name != "actor" else trainer.actor
     if scorer is None:
@@ -256,7 +333,7 @@ def teacher_answer_reward_postprocess(
         base_rewards = _as_tensor(traj["rewards"]).to(rewards.device).float()
         adjusted_rewards = base_rewards + torch.where(
             has_answer,
-            rewards
+            logp_reward_weight * rewards
             + format_bonus * format_found
             - length_penalty * (optimized_lengths / max_new_tokens),
             torch.zeros_like(rewards),
@@ -304,6 +381,10 @@ def teacher_answer_reward_postprocess(
     )
     stat_kwargs = dict(
         teacher_answer_logp=rewards_cat,
+        teacher_answer_logp_reward_weight=torch.full_like(
+            rewards_cat,
+            float(logp_reward_weight),
+        ),
         teacher_answer_reward=torch.cat(all_adjusted_rewards),
         teacher_answer_len=torch.cat(all_lengths),
         teacher_context_len=torch.cat(all_context_lengths),

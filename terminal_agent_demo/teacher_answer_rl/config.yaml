@@ -1,10 +1,10 @@
-experiment_name: ta-ref-lenpen-w25-p128-syn08-o2048-s50
+experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
 trial_name: trial0
 
 seed: 7
 enable_offload: false
 total_train_epochs: 1
-total_train_steps: 50
+total_train_steps: 40
 tokenizer_path: ${actor.path}
 
 cluster:
@@ -22,7 +22,7 @@ rollout:
   backend: "vllm:d4p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 48
+  max_concurrent_rollouts: 32
   queue_size: null
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 2
@@ -37,8 +37,8 @@ rollout:
 gconfig:
   n_samples: 2
   min_new_tokens: 0
-  max_new_tokens: 2048
-  max_tokens: 32768
+  max_new_tokens: 1024
+  max_tokens: 20480
   greedy: false
   temperature: 0.6
   top_p: 0.95
@@ -47,8 +47,8 @@ gconfig:
 eval_gconfig:
   n_samples: 1
   min_new_tokens: 0
-  max_new_tokens: 2048
-  max_tokens: 32768
+  max_new_tokens: 1024
+  max_tokens: 20480
   greedy: false
   temperature: 0.6
   top_p: 0.95
@@ -58,19 +58,19 @@ actor:
   backend: "megatron:d4p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/qwen3-4b-thinking-terminus-tool-sft-medium-even-trajectory32768-b32-tok576k-h200/trial0/default/epoch0epochstep1384globalstep1384
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 32768
+    max_tokens_per_mb: 20480
     packing_algorithm: ffd
   pad_to_maximum: true
   enable_tree_training: true
   optimizer:
     type: adam
-    lr: 5e-8
+    lr: 7e-8
     weight_decay: 0.01
     beta1: 0.9
     beta2: 0.999
@@ -134,7 +134,7 @@ ref:
   disable_dropout: true
   dtype: ${actor.dtype}
   mb_spec:
-    max_tokens_per_mb: 32768
+    max_tokens_per_mb: 20480
     packing_algorithm: ffd
   optimizer: null
   scheduling_strategy:
@@ -149,13 +149,13 @@ sglang:
   skip_tokenizer_init: false
   dtype: ${actor.dtype}
   max_running_requests: 256
-  context_length: 32768
+  context_length: 20480
   mem_fraction_static: 0.70
   attention_backend: flashinfer
   log_level: warning
   log_level_http: warning
   chunked_prefill_size: -1
-  max_prefill_tokens: 32768
+  max_prefill_tokens: 20480
 
 vllm:
   model: ${actor.path}
@@ -164,20 +164,20 @@ vllm:
   skip_tokenizer_init: false
   dtype: ${actor.dtype}
   max_num_seqs: 64
-  max_model_len: 32768
+  max_model_len: 20480
   gpu_memory_utilization: 0.70
   no_enable_prefix_caching: false
   uvicorn_log_level: warning
 
 train_dataset:
-  batch_size: 16
+  batch_size: 8
   shuffle: false
   pin_memory: true
   num_workers: 8
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_medium.odd_original.terminus_tool.jsonl
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_easy.terminus_tool.jsonl
   split: train
   type: rl
-  max_length: 32768
+  max_length: 20480
   scheduling_spec: null
   dataset_kwargs:
     split_part: null
@@ -189,22 +189,32 @@ train_dataset:
     workflow_mode: full_turn
     teacher_answer_start: tool_call
     teacher_answer_scorer: ref
-    teacher_answer_score_mode: all
-    teacher_loss_span: thinking
-    syntax_reward_on_teacher_row: false
-    supervise_teacher_answer: true
-    teacher_answer_supervised_weight: 0.25
+    teacher_answer_score_mode: commands
+    teacher_answer_logp_reward_weight: 0.0
+    teacher_loss_span: tool_call
+    syntax_reward_on_teacher_row: true
+    supervise_teacher_answer: false
+    teacher_answer_supervised_weight: 0.0
     teacher_answer_supervised_score_mode: all
     teacher_answer_supervised_max_prefix_tokens: 128
     teacher_answer_reward_norm: group
     teacher_answer_reward_norm_group_size: ${gconfig.n_samples}
-    syntax_reward_weight: 0.08
-    valid_syntax_reward: 1.0
+    teacher_command_match_reward_weight: 1.5
+    teacher_command_presence_reward_weight: 0.4
+    teacher_command_newline_reward_weight: 0.05
+    teacher_completion_match_reward_weight: 2.0
+    teacher_empty_completion_reward_weight: 0.5
+    teacher_command_count_reward_weight: 0.2
+    teacher_repeated_command_penalty_weight: 1.0
+    teacher_reward_requires_valid_syntax: false
+    drop_invalid_teacher_row_loss: false
+    syntax_reward_weight: 1.0
+    valid_syntax_reward: 0.5
     invalid_syntax_reward: -1.0
-    syntax_thinking_length_penalty_weight: 0.20
-    syntax_output_length_penalty_weight: 0.05
+    syntax_thinking_length_penalty_weight: 0.0
+    syntax_output_length_penalty_weight: 0.12
     emit_syntax_view: true
-    emit_valid_syntax_view: true
+    emit_valid_syntax_view: false
 
 valid_dataset: null
 
@@ -213,7 +223,7 @@ saver:
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
   freq_epochs: null
-  freq_steps: 5
+  freq_steps: 10
   freq_secs: null
 
 recover:

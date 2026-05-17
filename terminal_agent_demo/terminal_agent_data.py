@@ -18,7 +18,12 @@ from typing import Any
 from datasets import Dataset
 from torch.utils.data import Dataset as TorchDataset
 
-from terminal_agent_demo.terminus_tool_calling import EXECUTE_COMMANDS_TOOL
+from terminal_agent_demo.terminus_tool_calling import (
+    EXECUTE_COMMANDS_TOOL,
+    TERMINUS_TOOL_SYSTEM_PROMPT,
+    TerminusToolPayloadError,
+    parse_execute_commands_arguments,
+)
 
 
 _COMMAND_KEY_PATTERNS = (
@@ -96,7 +101,10 @@ def _messages(row: dict[str, Any]) -> list[dict[str, Any]]:
         raise TerminalToolDataError("row has no messages list")
     if sum(1 for msg in messages if msg.get("role") == "user") != 1:
         raise TerminalToolDataError("converted trajectory must contain exactly one user message")
-    return [dict(msg) for msg in messages]
+    copied = [dict(msg) for msg in messages]
+    if copied and copied[0].get("role") == "system":
+        copied[0]["content"] = TERMINUS_TOOL_SYSTEM_PROMPT
+    return copied
 
 
 def _apply_chat_template(
@@ -241,11 +249,65 @@ class TerminalToolSFTLazyDataset(TorchDataset):
         raise IndexError("No tokenizable Terminus tool-calling SFT trajectories found")
 
 
-def _assistant_indices(row: dict[str, Any]) -> list[int]:
+def _normalize_teacher_turn_filter(teacher_turn_filter: str | None) -> str:
+    if teacher_turn_filter is None:
+        return "all"
+    value = str(teacher_turn_filter).strip().lower().replace("-", "_")
+    if not value or value in {"0", "false", "none", "null", "off", "all", "any"}:
+        return "all"
+    if value in {"task_complete", "complete", "completed", "final"}:
+        return "task_complete"
+    if value in {"not_task_complete", "incomplete", "intermediate"}:
+        return "not_task_complete"
+    raise ValueError(
+        "teacher_turn_filter must be one of all, task_complete, or not_task_complete"
+    )
+
+
+def _assistant_tool_payload(msg: dict[str, Any]):
+    tool_calls = msg.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return None
+    call = tool_calls[0]
+    if not isinstance(call, dict):
+        return None
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    try:
+        return parse_execute_commands_arguments(function.get("arguments") or "{}")
+    except TerminusToolPayloadError:
+        return None
+
+
+def _assistant_matches_turn_filter(
+    msg: dict[str, Any],
+    teacher_turn_filter: str | None,
+) -> bool:
+    turn_filter = _normalize_teacher_turn_filter(teacher_turn_filter)
+    if turn_filter == "all":
+        return True
+    payload = _assistant_tool_payload(msg)
+    if payload is None:
+        return False
+    if turn_filter == "task_complete":
+        return payload.task_complete
+    if turn_filter == "not_task_complete":
+        return not payload.task_complete
+    raise AssertionError(f"unexpected teacher_turn_filter: {turn_filter}")
+
+
+def _assistant_indices(
+    row: dict[str, Any],
+    *,
+    teacher_turn_filter: str | None = None,
+) -> list[int]:
     return [
         idx
         for idx, msg in enumerate(_messages(row))
-        if msg.get("role") == "assistant" and msg.get("tool_calls")
+        if msg.get("role") == "assistant"
+        and msg.get("tool_calls")
+        and _assistant_matches_turn_filter(msg, teacher_turn_filter)
     ]
 
 
@@ -364,23 +426,36 @@ class TerminalToolTeacherAnswerLazyDataset(TorchDataset):
         raise IndexError("No usable Terminus tool-calling teacher-answer records found")
 
 
-_TEACHER_REF_CACHE_VERSION = 1
+_TEACHER_REF_CACHE_VERSION = 2
 
 
-def _default_teacher_refs_cache_path(path: Path) -> Path:
-    return path.with_suffix(path.suffix + ".teacher_refs.v1.json")
+def _teacher_turn_filter_slug(teacher_turn_filter: str | None) -> str:
+    return _normalize_teacher_turn_filter(teacher_turn_filter)
 
 
-def _resolve_teacher_refs_cache_path(path: Path, cache: str | bool | None) -> Path | None:
+def _default_teacher_refs_cache_path(
+    path: Path,
+    teacher_turn_filter: str | None,
+) -> Path:
+    slug = _teacher_turn_filter_slug(teacher_turn_filter)
+    suffix = ".teacher_refs.v2.json" if slug == "all" else f".teacher_refs.v2.{slug}.json"
+    return path.with_suffix(path.suffix + suffix)
+
+
+def _resolve_teacher_refs_cache_path(
+    path: Path,
+    cache: str | bool | None,
+    teacher_turn_filter: str | None,
+) -> Path | None:
     if cache is None:
-        return _default_teacher_refs_cache_path(path)
+        return _default_teacher_refs_cache_path(path, teacher_turn_filter)
     if isinstance(cache, bool):
-        return _default_teacher_refs_cache_path(path) if cache else None
+        return _default_teacher_refs_cache_path(path, teacher_turn_filter) if cache else None
     cache_str = str(cache).strip()
     if not cache_str or cache_str.lower() in {"0", "false", "none", "null", "off"}:
         return None
     if cache_str.lower() in {"1", "true", "auto", "default", "on"}:
-        return _default_teacher_refs_cache_path(path)
+        return _default_teacher_refs_cache_path(path, teacher_turn_filter)
     return Path(cache_str).expanduser()
 
 
@@ -388,6 +463,7 @@ def _load_teacher_refs_cache(
     path: Path,
     cache_path: Path,
     offsets: list[int],
+    teacher_turn_filter: str | None,
 ) -> list[tuple[int, int]] | None:
     try:
         stat = path.stat()
@@ -397,6 +473,10 @@ def _load_teacher_refs_cache(
     if payload.get("version") != _TEACHER_REF_CACHE_VERSION:
         return None
     if payload.get("path") != str(path):
+        return None
+    if payload.get("teacher_turn_filter", "all") != _normalize_teacher_turn_filter(
+        teacher_turn_filter
+    ):
         return None
     if payload.get("size") != stat.st_size or payload.get("mtime_ns") != stat.st_mtime_ns:
         return None
@@ -417,6 +497,7 @@ def _write_teacher_refs_cache(
     cache_path: Path,
     offsets: list[int],
     refs: list[tuple[int, int]],
+    teacher_turn_filter: str | None,
 ) -> None:
     tmp_path: Path | None = None
     try:
@@ -425,6 +506,7 @@ def _write_teacher_refs_cache(
         payload = {
             "version": _TEACHER_REF_CACHE_VERSION,
             "path": str(path),
+            "teacher_turn_filter": _normalize_teacher_turn_filter(teacher_turn_filter),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
             "offsets": offsets,
@@ -449,11 +531,18 @@ def _write_teacher_refs_cache(
                 pass
 
 
-def _build_teacher_refs(path: Path, offsets: list[int]) -> list[tuple[int, int]]:
+def _build_teacher_refs(
+    path: Path,
+    offsets: list[int],
+    teacher_turn_filter: str | None,
+) -> list[tuple[int, int]]:
     refs: list[tuple[int, int]] = []
     for offset in offsets:
         row = _read_jsonl_row(path, offset)
-        for assistant_idx in _assistant_indices(row):
+        for assistant_idx in _assistant_indices(
+            row,
+            teacher_turn_filter=teacher_turn_filter,
+        ):
             refs.append((offset, assistant_idx))
     return refs
 
@@ -462,15 +551,21 @@ def _build_or_load_teacher_refs(
     path: Path,
     offsets: list[int],
     cache: str | bool | None,
+    teacher_turn_filter: str | None,
 ) -> list[tuple[int, int]]:
-    cache_path = _resolve_teacher_refs_cache_path(path, cache)
+    cache_path = _resolve_teacher_refs_cache_path(path, cache, teacher_turn_filter)
     if cache_path is not None:
-        cached = _load_teacher_refs_cache(path, cache_path, offsets)
+        cached = _load_teacher_refs_cache(
+            path,
+            cache_path,
+            offsets,
+            teacher_turn_filter,
+        )
         if cached is not None:
             return cached
-    refs = _build_teacher_refs(path, offsets)
+    refs = _build_teacher_refs(path, offsets, teacher_turn_filter)
     if cache_path is not None:
-        _write_teacher_refs_cache(path, cache_path, offsets, refs)
+        _write_teacher_refs_cache(path, cache_path, offsets, refs, teacher_turn_filter)
     return refs
 
 
@@ -539,6 +634,7 @@ def get_terminal_teacher_answer_rl_dataset(
     shuffle_records: bool = False,
     enable_thinking: bool = True,
     teacher_answer_start: str = "commands",
+    teacher_turn_filter: str | None = None,
     teacher_refs_cache: str | bool | None = None,
     lazy_tokenize: bool = True,
     **_: Any,
@@ -552,7 +648,12 @@ def get_terminal_teacher_answer_rl_dataset(
         raise FileNotFoundError(f"converted JSONL does not exist: {jsonl_path}")
     offsets = _jsonl_offsets(jsonl_path)
     offsets = _limit_items(offsets, limit_rows)
-    refs = _build_or_load_teacher_refs(jsonl_path, offsets, teacher_refs_cache)
+    refs = _build_or_load_teacher_refs(
+        jsonl_path,
+        offsets,
+        teacher_refs_cache,
+        teacher_turn_filter,
+    )
     refs = _partition_items(
         refs,
         split_part=split_part,

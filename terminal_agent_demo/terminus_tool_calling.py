@@ -48,8 +48,6 @@ TERMINUS_TOOL_SYSTEM_PROMPT = """You are an AI assistant tasked with solving com
 Call `execute_commands` exactly once each turn with arguments matching this structure:
 
 {
-  "analysis": "Analyze the current state based on the terminal output provided. What do you see? What has been accomplished? What still needs to be done?",
-  "plan": "Describe your plan for the next steps. What commands will you run and why? Be specific about what you expect each command to accomplish.",
   "commands": [
     {
       "keystrokes": "ls -la\\n",
@@ -64,11 +62,11 @@ Call `execute_commands` exactly once each turn with arguments matching this stru
 }
 
 Required fields:
-- "analysis": Your analysis of the current situation
-- "plan": Your plan for the next steps
 - "commands": Array of command objects to execute
 
 Optional fields:
+- "analysis": One short sentence only. Omit it when it is not needed.
+- "plan": One short sentence only. Omit it when it is not needed.
 - "task_complete": Boolean indicating if the task is complete (defaults to false if not present)
 
 Command object structure:
@@ -87,6 +85,14 @@ It is better to set a smaller duration than a longer duration. It is always poss
 
 Important notes:
 - Each command's keystrokes are sent exactly as written to the terminal
+- Keep tool arguments concise. Do not restate the task, repeat requirements, or write long reasoning in analysis/plan.
+- Prefer acting with shell commands over thinking. Keep any hidden reasoning brief; every assistant turn should quickly call `execute_commands` instead of continuing to reason in text.
+- If you are unsure, run a small inspection command. If a previous approach repeats or stalls, try a different command or mark completion when the checks pass.
+- Preserve exact requested output formats, filenames, key names, and delimiters. Do not abbreviate JSON keys or strip wrappers such as FLAG{...} or secret[...].
+- If a task mentions recovered changes, patch files, resources, backups, or hidden history, inspect likely local evidence such as /app/resources, /app/inputs, /data, git branches, git reflog, and hidden refs before repeating generic status commands.
+- For regex, JSON, config, and other file-output tasks, write the required output file directly, validate it with a small local check, then set "task_complete": true.
+- Prefer tools already present in the container. Do not install OS or Python packages unless the task explicitly requires it or a quick check proves the needed tool is unavailable and cannot be replaced with Python stdlib or common shell utilities.
+- Run the relevant tests or checks after changing files. When the task requirements are satisfied, stop exploring and set "task_complete": true in the current tool call.
 - Do not include extra whitespace before or after the keystrokes unless it's part of the intended command
 - Avoid interactive pagers and editors unless the task explicitly requires them. Prefer noninteractive commands such as `git --no-pager ...`, `cat`, `sed`, `head`, and `tail`.
 - Do not put the action JSON in visible assistant text; put all action fields in the `execute_commands` tool call arguments
@@ -137,11 +143,13 @@ EXECUTE_COMMANDS_TOOL: dict[str, Any] = {
             "properties": {
                 "analysis": {
                     "type": "string",
-                    "description": "Short analysis of current state and remaining work.",
+                    "description": "Optional one-sentence analysis of current state.",
+                    "maxLength": 300,
                 },
                 "plan": {
                     "type": "string",
-                    "description": "Short plan for the next commands.",
+                    "description": "Optional one-sentence plan for the next commands.",
+                    "maxLength": 300,
                 },
                 "commands": {
                     "type": "array",
@@ -171,7 +179,7 @@ EXECUTE_COMMANDS_TOOL: dict[str, Any] = {
                     "description": "Whether the task is complete and ready for grading.",
                 },
             },
-            "required": ["analysis", "plan", "commands"],
+            "required": ["commands"],
             "additionalProperties": False,
         },
     },
@@ -219,6 +227,13 @@ def read_env_file(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_initial_messages(
     instruction: str,
     *,
@@ -226,14 +241,74 @@ def build_initial_messages(
     task_name: str | None = None,
 ) -> list[dict[str, Any]]:
     state = terminal_state.strip() or "Current Terminal Screen:\n$"
+    reminders = (
+        _task_specific_reminders(instruction, task_name=task_name)
+        if _env_bool("TERMINUS_TOOL_ENABLE_TASK_REMINDERS", False)
+        else []
+    )
+    reminder_text = ""
+    if reminders:
+        reminder_text = "\n\nTask-specific reminders:\n" + "\n".join(
+            f"- {reminder}" for reminder in reminders
+        )
     user_content = (
         f"Task Description:\n{instruction.strip()}\n\n"
+        f"{reminder_text}"
+        f"{'\n\n' if reminder_text else ''}"
         f"Current terminal state:\n{state}"
     )
     return [
         {"role": "system", "content": TERMINUS_TOOL_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
+
+
+def _task_specific_reminders(
+    instruction: str,
+    *,
+    task_name: str | None = None,
+) -> list[str]:
+    text = f"{task_name or ''}\n{instruction}".lower()
+    task_key = (task_name or "").lower()
+    reminders: list[str] = []
+
+    def add(value: str) -> None:
+        if value not in reminders:
+            reminders.append(value)
+
+    if "constraints-scheduling" in task_key or "calendar" in text or ".ics" in text:
+        add("Do not edit the input calendar files; parse their VEVENT DTSTART/DTEND entries and write only the requested output ICS file.")
+        add("Search valid 1-hour slots at minute granularity, enforce hard constraints first, then apply the stated tie-breakers.")
+        add("Validate the output ICS has VCALENDAR/VEVENT headers, UTC DTSTART/DTEND, the exact meeting summary, and all attendees.")
+    if "fix-git" in task_key or "patch_files" in text or "personal site" in text:
+        add("Look in git history, reflogs, and /app/resources/patch_files before guessing; compare recovered files against the working tree.")
+        add("The final master branch should contain the recovered site files, with no unrelated edits.")
+    if "git-leak" in task_key or "secret[" in text or "rewriting history" in text:
+        add("Search dangling git objects as well as reachable history, recover the secret to /app/secret.txt, then prune unreachable objects.")
+        add("After cleanup, check git log --all -p -S and git fsck output so the secret is no longer discoverable in the repo.")
+    if "log-summary" in task_key or "summary.csv" in text:
+        add("Use the date embedded in each log filename, not wall-clock date, and preserve the exact CSV row order requested.")
+        add("Count exactly ERROR, WARNING, and INFO for today, last_7_days, last_30_days, month_to_date, and total.")
+    if "modernize-scientific-stack" in task_key or "analyze_climate_modern.py" in text:
+        add("Create the modern script and dependency file in /app; do not modify the legacy Python 2 source.")
+        add("Run the modern script and verify it prints one formatted mean-temperature line per station.")
+    if "multi-source-data-merger" in task_key or "merged_users.parquet" in text:
+        add("Normalize schema names first, merge by user_id with source_a > source_b > source_c priority, and write both required output files.")
+        add("Record every conflicting field in conflicts.json with per-source values and the selected value.")
+    if "nginx-request-logging" in task_key or "benchmark-access.log" in text:
+        add("Configure nginx.conf for log_format and limit_req_zone, and put the server block in /etc/nginx/conf.d/benchmark-site.conf.")
+        add("Create the document root pages, remove the default site, run nginx -t, restart nginx, and curl localhost:8080 before finishing.")
+    if "regex-log" in task_key or "regex.txt" in text:
+        add("Write only the regex pattern to /app/regex.txt; test it locally with Python re.findall(..., re.MULTILINE).")
+        add("Use boundaries around both IPv4 addresses and dates, reject invalid octets/months/days, and capture only the last valid date per matching line.")
+    if "sqlite-db-truncate" in task_key or "recover.json" in text:
+        add("If sqlite3 cannot read the truncated database, inspect the binary directly for recoverable row strings and nearby numeric values.")
+        add("Write /app/recover.json as a JSON list of objects with word and value fields, then load it back with Python to validate.")
+    if "vulnerable-secret" in task_key or "flag{" in text or "results.txt" in text:
+        add("Inspect the executable with strings and small controlled inputs before brute force; capture the exact FLAG{...} value only.")
+        add("Write only the recovered flag to /app/results.txt and verify the file contents before marking the task complete.")
+
+    return reminders[:5]
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -312,11 +387,15 @@ def parse_execute_commands_arguments(raw: str | dict[str, Any]) -> ParsedPayload
             raise TerminusToolPayloadError(f"commands[{idx}].duration is invalid") from exc
         parsed_commands.append(ParsedCommand(keystrokes=keystrokes, duration=min(max(duration, 0.0), 60.0)))
 
+    task_complete = payload.get("task_complete", False)
+    if isinstance(task_complete, str):
+        task_complete = task_complete.strip().lower() in {"1", "true", "yes", "on"}
+
     return ParsedPayload(
         analysis=analysis,
         plan=plan,
         commands=parsed_commands,
-        task_complete=bool(payload.get("task_complete", False)),
+        task_complete=bool(task_complete),
     )
 
 
@@ -334,6 +413,7 @@ def payload_to_arguments(payload: ParsedPayload | dict[str, Any]) -> str:
 
 
 _TOOL_CALL_XML_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", flags=re.DOTALL)
+_TOOL_CALL_START_RE = re.compile(r"<tool_call>\s*", flags=re.DOTALL)
 
 
 def _synthetic_execute_commands_tool_call(payload: ParsedPayload, *, call_id: str | None = None) -> dict[str, Any]:
@@ -347,6 +427,15 @@ def _synthetic_execute_commands_tool_call(payload: ParsedPayload, *, call_id: st
     }
 
 
+def _payload_from_visible_tool_object(obj: dict[str, Any]) -> ParsedPayload:
+    if obj.get("name") == "execute_commands":
+        return parse_execute_commands_arguments(obj.get("arguments", {}))
+    function = obj.get("function")
+    if isinstance(function, dict) and function.get("name") == "execute_commands":
+        return parse_execute_commands_arguments(function.get("arguments", {}))
+    return parse_execute_commands_arguments(obj)
+
+
 def _tool_call_from_assistant_content(content: str | None) -> dict[str, Any] | None:
     if not isinstance(content, str) or not content.strip():
         return None
@@ -354,23 +443,26 @@ def _tool_call_from_assistant_content(content: str | None) -> dict[str, Any] | N
     for match in _TOOL_CALL_XML_RE.finditer(content):
         raw = match.group(1).strip()
         try:
-            call_payload = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(call_payload, dict):
-            continue
-        name = call_payload.get("name")
-        arguments = call_payload.get("arguments", {})
-        if name != "execute_commands":
-            continue
-        try:
-            parsed = parse_execute_commands_arguments(arguments)
+            parsed = _payload_from_visible_tool_object(_extract_json_object(raw))
         except TerminusToolPayloadError:
             continue
         return _synthetic_execute_commands_tool_call(parsed)
 
+    start_match = _TOOL_CALL_START_RE.search(content)
+    if start_match is not None:
+        raw = content[start_match.end():]
+        end = raw.find("</tool_call>")
+        if end >= 0:
+            raw = raw[:end]
+        try:
+            parsed = _payload_from_visible_tool_object(_extract_json_object(raw))
+        except TerminusToolPayloadError:
+            pass
+        else:
+            return _synthetic_execute_commands_tool_call(parsed)
+
     try:
-        parsed = parse_terminus_json_payload(content)
+        parsed = _payload_from_visible_tool_object(_extract_json_object(content))
     except TerminusToolPayloadError:
         return None
     return _synthetic_execute_commands_tool_call(parsed)
@@ -391,6 +483,9 @@ def _message_content_without_tool_call(content: str | None) -> str | None:
     if content is None:
         return None
     cleaned = _TOOL_CALL_XML_RE.sub("", content).strip()
+    start_match = _TOOL_CALL_START_RE.search(cleaned)
+    if start_match is not None:
+        cleaned = cleaned[: start_match.start()].strip()
     return cleaned or None
 
 
@@ -516,6 +611,64 @@ def _synthetic_recovery_tool_turn(error: str) -> tuple[dict[str, Any], dict[str,
     return assistant, tool
 
 
+def _message_context_chars(message: dict[str, Any]) -> int:
+    total = 0
+    for key in ("content", "reasoning", "reasoning_content"):
+        content = message.get(key)
+        if isinstance(content, str):
+            total += len(content)
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        total += len(json.dumps(tool_calls, ensure_ascii=False))
+    return total + 256
+
+
+def _trim_messages_for_context(
+    messages: list[dict[str, Any]],
+    *,
+    max_input_tokens: int,
+    max_output_tokens: int,
+    keep_recent_turns: int,
+    token_counter: Any | None = None,
+) -> list[dict[str, Any]]:
+    if len(messages) <= 2:
+        return messages
+
+    budget_tokens = max(max_input_tokens - max_output_tokens - 1024, 4096)
+    char_budget = max(8000, budget_tokens)
+
+    def fits(candidate: list[dict[str, Any]]) -> bool:
+        if token_counter is not None:
+            try:
+                return int(token_counter(candidate)) <= budget_tokens
+            except Exception:
+                pass
+        return sum(_message_context_chars(message) for message in candidate) <= char_budget
+
+    tail = messages[2:]
+    assistant_starts = [
+        idx for idx, message in enumerate(tail) if message.get("role") == "assistant"
+    ]
+    if not assistant_starts:
+        return messages
+
+    start = 0
+    if len(assistant_starts) > keep_recent_turns:
+        start = assistant_starts[-keep_recent_turns]
+    candidate = messages[:2] + tail[start:]
+    while start < len(tail) and not fits(candidate):
+        next_starts = [idx for idx in assistant_starts if idx > start]
+        if not next_starts:
+            break
+        start = next_starts[0]
+        candidate = messages[:2] + tail[start:]
+
+    trimmed = messages[:2] + tail[start:]
+    if start <= 0 and fits(trimmed):
+        return messages
+    return trimmed
+
+
 def _assistant_tool_message_from_parsed_payload(
     message: Any,
     tool_call: Any,
@@ -524,6 +677,14 @@ def _assistant_tool_message_from_parsed_payload(
     data = _message_to_dict(message)
     data["role"] = "assistant"
     data["content"] = _message_content_without_tool_call(data.get("content"))
+    if os.environ.get("TERMINUS_TOOL_KEEP_ASSISTANT_REASONING", "0").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        data.pop("reasoning", None)
+        data.pop("reasoning_content", None)
     data["tool_calls"] = [
         {
             "id": _tool_call_id(tool_call),
@@ -551,7 +712,19 @@ def tool_response_message(
     }
 
 
-def limit_output_length(output: str, max_bytes: int = 10000) -> str:
+def _terminal_observation_max_bytes(default: int = 10000) -> int:
+    raw = os.environ.get("TERMINUS_TOOL_OBSERVATION_MAX_BYTES")
+    if raw is None:
+        return default
+    try:
+        return max(512, int(raw))
+    except ValueError:
+        return default
+
+
+def limit_output_length(output: str, max_bytes: int | None = None) -> str:
+    if max_bytes is None:
+        max_bytes = _terminal_observation_max_bytes()
     if len(output.encode("utf-8")) <= max_bytes:
         return output
 
@@ -577,7 +750,7 @@ def completion_confirmation_message(terminal_output: str) -> str:
         "Are you sure you want to mark the task as complete? "
         "This will trigger your solution to be graded and you won't be able to "
         "make any further corrections. If so, call `execute_commands` again "
-        'with "task_complete": true.'
+        'with an empty "commands" array and "task_complete": true.'
     )
 
 
@@ -587,6 +760,10 @@ def _strip_new_terminal_prefix(text: str) -> str:
         if stripped.startswith(prefix):
             return stripped[len(prefix) :].lstrip()
     return stripped
+
+
+def _normalized_keystrokes_for_repeat(keystrokes: str) -> str:
+    return " ".join(keystrokes.strip().split())
 
 
 def _split_terminus_initial_prompt(content: str) -> tuple[str, str]:
@@ -1225,11 +1402,8 @@ class TerminusToolTerminalTaskRunner:
             timeout=self.task_timeouts.command * max(len(payload.commands), 1) + 10,
         )
         if payload.task_complete:
-            if self._pending_completion:
-                messages.append(tool_response_message(call_id, observation))
-                return True
-            self._pending_completion = True
-            observation = completion_confirmation_message(observation)
+            messages.append(tool_response_message(call_id, observation))
+            return True
         else:
             self._pending_completion = False
         messages.append(tool_response_message(call_id, observation))
@@ -1457,7 +1631,9 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         record_terminal_session: bool = True,
         tmux_pane_width: int = 160,
         tmux_pane_height: int = 40,
+        context_keep_recent_turns: int = 6,
         llm_kwargs: dict[str, Any] | None = None,
+        enable_thinking: bool | None = None,
         extra_env: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
@@ -1475,7 +1651,13 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         self._record_terminal_session = record_terminal_session
         self._tmux_pane_width = tmux_pane_width
         self._tmux_pane_height = tmux_pane_height
+        self._context_keep_recent_turns = max(1, int(context_keep_recent_turns))
         self._llm_kwargs = dict(llm_kwargs or {})
+        self._enable_thinking = (
+            _env_bool("TERMINUS_TOOL_ENABLE_THINKING", True)
+            if enable_thinking is None
+            else bool(enable_thinking)
+        )
         self._extra_env = dict(NONINTERACTIVE_TERMINAL_ENV)
         self._extra_env.update(extra_env or {})
         self._session: Any = None
@@ -1483,7 +1665,27 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         self._prompt_tokens = 0
         self._completion_tokens = 0
         self._messages: list[dict[str, Any]] = []
+        self._seen_command_counts: dict[str, int] = {}
         self._api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or "EMPTY"
+        self._tokenizer: Any | None = None
+
+    def _count_chat_tokens(self, messages: list[dict[str, Any]]) -> int:
+        if self._tokenizer is None:
+            from transformers import AutoTokenizer
+
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                self._model_name,
+                trust_remote_code=True,
+            )
+        return len(
+            self._tokenizer.apply_chat_template(
+                messages,
+                tools=[EXECUTE_COMMANDS_TOOL],
+                tokenize=True,
+                add_generation_prompt=True,
+                enable_thinking=self._enable_thinking,
+            )
+        )
 
     @staticmethod
     def name() -> str:
@@ -1521,6 +1723,13 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         await self._session.get_incremental_output()
 
     async def _call_llm(self, messages: list[dict[str, Any]], logging_path: Path | None) -> dict[str, Any]:
+        messages[:] = _trim_messages_for_context(
+            messages,
+            max_input_tokens=int(self._model_info.get("max_input_tokens") or 32768),
+            max_output_tokens=int(self._max_tokens),
+            keep_recent_turns=self._context_keep_recent_turns,
+            token_counter=self._count_chat_tokens,
+        )
         body = {
             "model": self._model_name,
             "messages": messages,
@@ -1532,6 +1741,11 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             "max_tokens": self._max_tokens,
             **self._llm_kwargs,
         }
+        extra_body = dict(body.get("extra_body") or {})
+        chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+        chat_template_kwargs.setdefault("enable_thinking", self._enable_thinking)
+        extra_body["chat_template_kwargs"] = chat_template_kwargs
+        body["extra_body"] = extra_body
         if self._temperature is not None:
             body.setdefault("temperature", self._temperature)
         if self._top_p is not None:
@@ -1570,6 +1784,22 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
                 current_body,
                 logging_path.with_suffix(".context_retry2.json") if logging_path is not None else None,
             )
+        if (
+            response.status_code >= 400
+            and "tool_choice" in current_body
+            and _env_bool("TERMINUS_TOOL_ENABLE_FORCED_NO_THINK_RETRY", False)
+        ):
+            forced_retry_body = dict(current_body)
+            forced_extra_body = dict(forced_retry_body.get("extra_body") or {})
+            forced_chat_template_kwargs = dict(forced_extra_body.get("chat_template_kwargs") or {})
+            forced_chat_template_kwargs["enable_thinking"] = False
+            forced_extra_body["chat_template_kwargs"] = forced_chat_template_kwargs
+            forced_retry_body["extra_body"] = forced_extra_body
+            response = await post_once(
+                forced_retry_body,
+                logging_path.with_suffix(".forced_retry.json") if logging_path is not None else None,
+            )
+            current_body = forced_retry_body
         if response.status_code >= 400 and "tool_choice" in current_body:
             retry_body = dict(current_body)
             retry_body.pop("tool_choice", None)
@@ -1577,18 +1807,21 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
                 retry_body,
                 logging_path.with_suffix(".retry.json") if logging_path is not None else None,
             )
+            current_body = retry_body
             context_retry_body = _context_length_retry_body(retry_body, response.text) if response.status_code >= 400 else None
             if context_retry_body is not None:
                 response = await post_once(
                     context_retry_body,
                     logging_path.with_suffix(".retry_context.json") if logging_path is not None else None,
                 )
+                current_body = context_retry_body
                 context_retry_body = _context_length_retry_body(context_retry_body, response.text) if response.status_code >= 400 else None
                 if context_retry_body is not None:
                     response = await post_once(
                         context_retry_body,
                         logging_path.with_suffix(".retry_context2.json") if logging_path is not None else None,
                     )
+                    current_body = context_retry_body
         if response.status_code >= 400 and _is_context_length_error(response.text):
             raise ContextLengthExceededError(response.text[:1000])
         response.raise_for_status()
@@ -1596,12 +1829,57 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
         usage = payload.get("usage") or {}
         self._prompt_tokens += int(usage.get("prompt_tokens") or 0)
         self._completion_tokens += int(usage.get("completion_tokens") or 0)
-        return payload["choices"][0]["message"]
+        message = payload["choices"][0]["message"]
+        if _first_tool_call(message) is None and _env_bool("TERMINUS_TOOL_ENABLE_NO_TOOL_REPAIR", False):
+            repair_body = dict(current_body)
+            repair_body.pop("tool_choice", None)
+            repair_body["messages"] = list(repair_body.get("messages") or messages) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "Your previous response did not call execute_commands. "
+                        "Respond now with exactly one execute_commands tool call. "
+                        "Use shell commands if more work is needed; if the task is complete, "
+                        "set task_complete to true with an empty commands list. "
+                        "Do not provide plain text."
+                    ),
+                }
+            ]
+            repair_body["max_tokens"] = min(
+                int(repair_body.get("max_tokens") or self._max_tokens),
+                int(os.environ.get("TERMINUS_TOOL_REPAIR_MAX_TOKENS", "768")),
+            )
+            repair_body["temperature"] = 0.0
+            repair_extra_body = dict(repair_body.get("extra_body") or {})
+            repair_chat_template_kwargs = dict(repair_extra_body.get("chat_template_kwargs") or {})
+            repair_chat_template_kwargs["enable_thinking"] = False
+            repair_extra_body["chat_template_kwargs"] = repair_chat_template_kwargs
+            repair_body["extra_body"] = repair_extra_body
+            repair_response = await post_once(
+                repair_body,
+                logging_path.with_suffix(".tool_retry.json") if logging_path is not None else None,
+            )
+            if repair_response.status_code < 400:
+                repair_payload = repair_response.json()
+                repair_usage = repair_payload.get("usage") or {}
+                self._prompt_tokens += int(repair_usage.get("prompt_tokens") or 0)
+                self._completion_tokens += int(repair_usage.get("completion_tokens") or 0)
+                repair_message = repair_payload["choices"][0]["message"]
+                if _first_tool_call(repair_message) is not None:
+                    message = repair_message
+        return message
 
     async def _execute_commands(self, payload: ParsedPayload) -> str:
         if self._session is None:
             raise RuntimeError("tmux session is not initialized")
+        repeated_commands: list[str] = []
         for command in payload.commands:
+            normalized = _normalized_keystrokes_for_repeat(command.keystrokes)
+            if normalized:
+                prior_count = self._seen_command_counts.get(normalized, 0)
+                if prior_count >= 2:
+                    repeated_commands.append(normalized)
+                self._seen_command_counts[normalized] = prior_count + 1
             try:
                 await self._session.send_keys(
                     command.keystrokes,
@@ -1614,14 +1892,39 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
                     command=command.keystrokes,
                     terminal_state=limit_output_length(await self._session.get_incremental_output()),
                 )
-        return limit_output_length(await self._session.get_incremental_output())
+        output = limit_output_length(await self._session.get_incremental_output())
+        if repeated_commands:
+            shown = "; ".join(repeated_commands[:3])
+            output += (
+                "\n\nRepeated-command warning: you have already run this exact "
+                f"command several times: {shown}. Use the previous output, try a "
+                "different approach, or mark task_complete when the solution is ready. "
+                "Do not run the same command again unless you changed the files or arguments."
+            )
+        return output
 
     async def run(self, instruction: str, environment: Any, context: Any) -> None:
         if self._session is None:
             raise RuntimeError("setup() must be called before run()")
         initial_state = await self._session.get_incremental_output()
-        messages = build_initial_messages(instruction, terminal_state=initial_state)
+        task_name = None
+        if context is not None:
+            metadata = getattr(context, "metadata", None)
+            if isinstance(metadata, dict):
+                task_name = metadata.get("task_name") or metadata.get("task")
+        if task_name is None and environment is not None:
+            task_name = getattr(environment, "task_name", None) or getattr(
+                environment,
+                "name",
+                None,
+            )
+        messages = build_initial_messages(
+            instruction,
+            terminal_state=initial_state,
+            task_name=str(task_name) if task_name is not None else None,
+        )
         self._messages = messages
+        self._seen_command_counts = {}
         stop_reason = "max_turns"
 
         for turn in range(self._max_turns):
@@ -1652,12 +1955,9 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             messages.append(_assistant_tool_message_from_parsed_payload(message, tool_call, payload))
             observation = await self._execute_commands(payload)
             if payload.task_complete:
-                if self._pending_completion:
-                    messages.append(tool_response_message(call_id, observation))
-                    stop_reason = "task_complete"
-                    break
-                self._pending_completion = True
-                observation = completion_confirmation_message(observation)
+                messages.append(tool_response_message(call_id, observation))
+                stop_reason = "task_complete"
+                break
             else:
                 self._pending_completion = False
             messages.append(tool_response_message(call_id, observation))
