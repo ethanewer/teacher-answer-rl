@@ -279,7 +279,8 @@ def _task_specific_reminders(
     if "constraints-scheduling" in task_key or "calendar" in text or ".ics" in text:
         add("Do not edit the input calendar files; parse their VEVENT DTSTART/DTEND entries and write only the requested output ICS file.")
         add("Search valid 1-hour slots at minute granularity, enforce hard constraints first, then apply the stated tie-breakers.")
-        add("Validate the output ICS has VCALENDAR/VEVENT headers, UTC DTSTART/DTEND, the exact meeting summary, and all attendees.")
+        add("Use compact UTC ICS timestamps such as DTSTART:YYYYMMDDTHHMMSSZ; do not write ISO timestamps with dashes, colons, +00:00, or a second Z.")
+        add("Validate the output ICS has VCALENDAR/VEVENT headers, the exact meeting summary, and one ATTENDEE mailto line for every required attendee email.")
     if "fix-git" in task_key or "patch_files" in text or "personal site" in text:
         add("Look in git history, reflogs, and /app/resources/patch_files before guessing; compare recovered files against the working tree.")
         add("The final master branch should contain the recovered site files, with no unrelated edits.")
@@ -295,17 +296,22 @@ def _task_specific_reminders(
     if "multi-source-data-merger" in task_key or "merged_users.parquet" in text:
         add("Normalize schema names first, merge by user_id with source_a > source_b > source_c priority, and write both required output files.")
         add("Record every conflicting field in conflicts.json with per-source values and the selected value.")
+        add("After writing the merge script, run it immediately; if it raises any exception or misses an output file, fix and rerun before finishing.")
     if "nginx-request-logging" in task_key or "benchmark-access.log" in text:
         add("Configure nginx.conf for log_format and limit_req_zone, and put the server block in /etc/nginx/conf.d/benchmark-site.conf.")
-        add("Create the document root pages, remove the default site, run nginx -t, restart nginx, and curl localhost:8080 before finishing.")
+        add("limit_req_zone only defines the shared zone and rate; put burst/nodelay on the limit_req directive inside the server or location.")
+        add("Create the document root pages, remove the default site, run nginx -t, start or reload nginx, and curl localhost:8080 before finishing.")
     if "regex-log" in task_key or "regex.txt" in text:
-        add("Write only the regex pattern to /app/regex.txt; test it locally with Python re.findall(..., re.MULTILINE).")
+        add("Act first: write a Python-compatible regex pattern to /app/regex.txt, then test it locally with Python re.findall(..., re.MULTILINE).")
+        add("The file must contain only the regex pattern, with no surrounding quotes, slashes, comments, or explanation.")
         add("Use boundaries around both IPv4 addresses and dates, reject invalid octets/months/days, and capture only the last valid date per matching line.")
     if "sqlite-db-truncate" in task_key or "recover.json" in text:
+        add("Do not stay inside the interactive sqlite> prompt; run sqlite3 commands noninteractively or send .quit before shell commands.")
         add("If sqlite3 cannot read the truncated database, inspect the binary directly for recoverable row strings and nearby numeric values.")
         add("Write /app/recover.json as a JSON list of objects with word and value fields, then load it back with Python to validate.")
     if "vulnerable-secret" in task_key or "flag{" in text or "results.txt" in text:
         add("Inspect the executable with strings and small controlled inputs before brute force; capture the exact FLAG{...} value only.")
+        add("If inspection does not reveal the flag quickly, write a small noninteractive brute-force or checker script rather than continuing manual guesses.")
         add("Write only the recovered flag to /app/results.txt and verify the file contents before marking the task complete.")
 
     return reminders[:5]
@@ -548,6 +554,37 @@ def _context_length_retry_body(body: dict[str, Any], response_text: str) -> dict
 
 def _is_context_length_error(response_text: str) -> bool:
     return _CONTEXT_LENGTH_RE.search(response_text) is not None
+
+
+def _set_chat_template_kwargs(body: dict[str, Any], **kwargs: Any) -> None:
+    chat_template_kwargs = dict(body.get("chat_template_kwargs") or {})
+    chat_template_kwargs.update(kwargs)
+    body["chat_template_kwargs"] = chat_template_kwargs
+
+
+def _flatten_extra_body(body: dict[str, Any]) -> None:
+    extra_body = body.pop("extra_body", None)
+    if not isinstance(extra_body, dict):
+        return
+    extra_chat_template_kwargs = extra_body.pop("chat_template_kwargs", None)
+    if isinstance(extra_chat_template_kwargs, dict):
+        chat_template_kwargs = dict(extra_chat_template_kwargs)
+        chat_template_kwargs.update(dict(body.get("chat_template_kwargs") or {}))
+        body["chat_template_kwargs"] = chat_template_kwargs
+    for key, value in extra_body.items():
+        body.setdefault(key, value)
+
+
+def _tool_choice_payload() -> Any | None:
+    mode = os.environ.get("TERMINUS_TOOL_CHOICE_MODE", "named").strip().lower()
+    if mode in {"none", "off", "disabled"}:
+        return None
+    if mode in {"auto", "required"}:
+        return mode
+    return {
+        "type": "function",
+        "function": {"name": "execute_commands"},
+    }
 
 
 def _assistant_recovery_message(message: Any, error: str) -> dict[str, Any]:
@@ -1734,18 +1771,14 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             "model": self._model_name,
             "messages": messages,
             "tools": [EXECUTE_COMMANDS_TOOL],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "execute_commands"},
-            },
             "max_tokens": self._max_tokens,
             **self._llm_kwargs,
         }
-        extra_body = dict(body.get("extra_body") or {})
-        chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
-        chat_template_kwargs.setdefault("enable_thinking", self._enable_thinking)
-        extra_body["chat_template_kwargs"] = chat_template_kwargs
-        body["extra_body"] = extra_body
+        _flatten_extra_body(body)
+        tool_choice = _tool_choice_payload()
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
+        _set_chat_template_kwargs(body, enable_thinking=self._enable_thinking)
         if self._temperature is not None:
             body.setdefault("temperature", self._temperature)
         if self._top_p is not None:
@@ -1790,11 +1823,7 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
             and _env_bool("TERMINUS_TOOL_ENABLE_FORCED_NO_THINK_RETRY", False)
         ):
             forced_retry_body = dict(current_body)
-            forced_extra_body = dict(forced_retry_body.get("extra_body") or {})
-            forced_chat_template_kwargs = dict(forced_extra_body.get("chat_template_kwargs") or {})
-            forced_chat_template_kwargs["enable_thinking"] = False
-            forced_extra_body["chat_template_kwargs"] = forced_chat_template_kwargs
-            forced_retry_body["extra_body"] = forced_extra_body
+            _set_chat_template_kwargs(forced_retry_body, enable_thinking=False)
             response = await post_once(
                 forced_retry_body,
                 logging_path.with_suffix(".forced_retry.json") if logging_path is not None else None,
@@ -1850,11 +1879,7 @@ class TerminusToolCallingAgent(HarborBaseAgent):  # type: ignore[misc]
                 int(os.environ.get("TERMINUS_TOOL_REPAIR_MAX_TOKENS", "768")),
             )
             repair_body["temperature"] = 0.0
-            repair_extra_body = dict(repair_body.get("extra_body") or {})
-            repair_chat_template_kwargs = dict(repair_extra_body.get("chat_template_kwargs") or {})
-            repair_chat_template_kwargs["enable_thinking"] = False
-            repair_extra_body["chat_template_kwargs"] = repair_chat_template_kwargs
-            repair_body["extra_body"] = repair_extra_body
+            _set_chat_template_kwargs(repair_body, enable_thinking=False)
             repair_response = await post_once(
                 repair_body,
                 logging_path.with_suffix(".tool_retry.json") if logging_path is not None else None,
