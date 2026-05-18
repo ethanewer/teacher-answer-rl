@@ -155,6 +155,7 @@ easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
 | Base | `Qwen/Qwen3-4B-Thinking-2507` | easy-10, 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
 | SFT | `epoch0epochstep1384globalstep1384` | easy-10, 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
 | SFT + hand-crafted turn-reward TA-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40-repro-full-r1`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-fullrerun-r1` | 20/50 = 40% |
+| SFT + domain-general likelihood TA-RL | `ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1`, selected step 39 | easy-10, 5 trials/task, `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096` | 20/50 = 40% |
 | SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
 
 The default teacher-answer-RL recipe is:
@@ -166,19 +167,21 @@ AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml
 It is the RL-only, hand-crafted turn-reward command-presence/completion recipe
 used for the confirmed SFT + hand-crafted turn-reward TA-RL result above.
 
-An experimental domain-general teacher-answer recipe is:
+A confirmed domain-general teacher-answer recipe is:
 
 ```text
-AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix.yaml
+AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix_short_n4.yaml
 ```
 
 This recipe follows the likelihood-reward direction studied in
 `https://arxiv.org/abs/2602.03979`: for each tool-loop state it samples the
 student's prefix before the next serialized tool call, then rewards that prefix
-by the average log-probability of the corpus teacher's next tool-call block. It
-uses only the message history, tool schema, sampled prefix, and teacher
-continuation, so it is intended to apply to any tool-calling agent domain with
-reference trajectories. It does not parse terminal commands or use
+by the average log-probability of the corpus teacher's next tool-call block. The
+matched recipe uses 4 samples per prompt, 512 max sampled prefix tokens, group
+reward normalization across samples, and a YAML-configured output-length
+penalty. It uses only the message history, tool schema, sampled prefix, and
+teacher continuation, so it is intended to apply to any tool-calling agent
+domain with reference trajectories. It does not parse terminal commands or use
 terminal-specific action-similarity rewards.
 
 The SFT + GRPO row uses:
