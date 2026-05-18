@@ -116,10 +116,13 @@ AReaL/terminal_agent_demo/grpo/run_even_medium_real.sh
 
 The SFT recipe trains full converted trajectories with sequence packing at 32k
 context and about 0.5M-0.7M tokens per update. The default teacher-answer-RL
-recipe is the current easy-task command-presence recipe: RL-only
-teacher-answer scoring from the tool-call span, group-normalized rewards,
-command overlap/presence/completion rewards, tool-call syntax reward, and length
-penalties. It does not apply supervised teacher-answer loss.
+recipe is a hand-crafted turn-based reward function for this terminal-agent
+harness: it scores similarity between the student's generated `execute_commands`
+action and the corpus teacher action with command overlap/presence/completion
+rewards, tool-call syntax reward, repeated-command penalties, group reward
+normalization, and output-length penalties. This is not the domain-general
+teacher-answer likelihood algorithm; it does not apply supervised
+teacher-answer loss.
 
 The comparable GRPO recipe starts from the final SFT checkpoint and trains on
 odd medium synthetic-task rows matched to the teacher-answer-RL setup. It runs
@@ -151,7 +154,7 @@ easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
 | --- | --- | --- | --- |
 | Base | `Qwen/Qwen3-4B-Thinking-2507` | easy-10, 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
 | SFT | `epoch0epochstep1384globalstep1384` | easy-10, 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
-| SFT + teacher-answer-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40-repro-full-r1`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-fullrerun-r1` | 20/50 = 40% |
+| SFT + hand-crafted turn-reward TA-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40-repro-full-r1`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-fullrerun-r1` | 20/50 = 40% |
 | SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
 
 The default teacher-answer-RL recipe is:
@@ -160,8 +163,23 @@ The default teacher-answer-RL recipe is:
 AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml
 ```
 
-It is the RL-only command-presence/completion recipe used for the confirmed
-SFT + teacher-answer-RL result above.
+It is the RL-only, hand-crafted turn-reward command-presence/completion recipe
+used for the confirmed SFT + hand-crafted turn-reward TA-RL result above.
+
+An experimental domain-general teacher-answer recipe is:
+
+```text
+AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix.yaml
+```
+
+This recipe follows the likelihood-reward direction studied in
+`https://arxiv.org/abs/2602.03979`: for each tool-loop state it samples the
+student's prefix before the next serialized tool call, then rewards that prefix
+by the average log-probability of the corpus teacher's next tool-call block. It
+uses only the message history, tool schema, sampled prefix, and teacher
+continuation, so it is intended to apply to any tool-calling agent domain with
+reference trajectories. It does not parse terminal commands or use
+terminal-specific action-similarity rewards.
 
 The SFT + GRPO row uses:
 
