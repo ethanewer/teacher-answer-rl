@@ -272,6 +272,139 @@ def _teacher_answer_score_mask(
     return [0] * start + [1] * (len(answer_ids) - start)
 
 
+def _optional_tools(data: dict[str, Any]) -> list[dict[str, Any]] | None:
+    tools = data.get("tools")
+    return tools if isinstance(tools, list) and tools else None
+
+
+class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
+    """Domain-general teacher-action likelihood reward.
+
+    This workflow samples only the student's prefix before the next serialized
+    tool call, then lets reward postprocessing score the corpus teacher action
+    under that sampled prefix. It does not parse tool arguments or use
+    terminal-specific action similarity rewards.
+    """
+
+    def __init__(
+        self,
+        gconfig: GenerationHyperparameters,
+        tokenizer: PreTrainedTokenizerFast | str,
+        enable_thinking: bool = True,
+        teacher_answer_score_mode: str = "all",
+        generic_stop_strings: list[str] | tuple[str, ...] | str | None = None,
+    ):
+        self.tokenizer = tokenizer
+        if isinstance(self.tokenizer, str):
+            from areal.utils.hf_utils import load_hf_tokenizer
+
+            self.tokenizer = load_hf_tokenizer(self.tokenizer)
+        if generic_stop_strings is None:
+            stop_strings = ["<tool_call>"]
+        elif isinstance(generic_stop_strings, str):
+            stop_strings = [generic_stop_strings]
+        else:
+            stop_strings = [str(item) for item in generic_stop_strings]
+        stop = list(gconfig.stop or [])
+        for stop_string in stop_strings:
+            if stop_string and stop_string not in stop:
+                stop.append(stop_string)
+        self.gconfig = gconfig.new(stop=stop).new_with_stop_and_pad_token_ids(
+            self.tokenizer
+        )
+        self.enable_thinking = enable_thinking
+        self.teacher_answer_score_mode = teacher_answer_score_mode
+
+    def _input_ids(self, data: dict[str, Any]) -> list[int]:
+        kwargs: dict[str, Any] = dict(
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=self.enable_thinking,
+        )
+        tools = _optional_tools(data)
+        if tools is not None:
+            kwargs["tools"] = tools
+        return list(self.tokenizer.apply_chat_template(data["messages"], **kwargs))
+
+    def _teacher_answer_metadata(
+        self,
+        seq_len: int,
+        data: dict[str, Any],
+        context_len: int,
+    ) -> tuple[list[int], list[int], list[int], list[int], list[int], list[int]]:
+        teacher_answer = str(data["teacher_answer"]).rstrip()
+        answer_ids = _tokenize_text(self.tokenizer, teacher_answer)
+        score_mode = self.teacher_answer_score_mode.strip().lower().replace("-", "_")
+        if score_mode in {"", "all", "full"}:
+            score_ids = [1] * len(answer_ids)
+        else:
+            raise ValueError(
+                "GenericToolActionLikelihoodWorkflow only supports "
+                f"teacher_answer_score_mode=all/full, got {self.teacher_answer_score_mode!r}"
+            )
+        prefix_values, prefix_mask = _metadata_vector([], seq_len)
+        answer_values, answer_mask = _metadata_vector(answer_ids, seq_len)
+        score_values, _ = _metadata_vector(score_ids, seq_len)
+        context_len = max(0, min(context_len, seq_len))
+        context_mask = [1] * context_len + [0] * (seq_len - context_len)
+        return (
+            prefix_values,
+            prefix_mask,
+            answer_values,
+            answer_mask,
+            score_values,
+            context_mask,
+        )
+
+    @session_context()
+    async def arun_episode(
+        self, engine: InferenceEngine, data: dict[str, Any]
+    ) -> dict[str, torch.Tensor]:
+        input_ids = self._input_ids(data)
+        req = ModelRequest(
+            rid=uuid.uuid4().hex,
+            input_ids=input_ids,
+            gconfig=self.gconfig.new(n_samples=1),
+            tokenizer=self.tokenizer,
+        )
+
+        async with atrace_session_phase("generate"):
+            resp = await engine.agenerate(req)
+
+        seq = resp.input_tokens + resp.output_tokens
+        logprobs = [0.0] * resp.input_len + resp.output_logprobs
+        versions = [-1] * resp.input_len + resp.output_versions
+        loss_mask = [0] * resp.input_len + [1] * resp.output_len
+        context_len = resp.input_len + resp.output_len
+
+        (
+            prefix_values,
+            prefix_mask,
+            answer_values,
+            answer_mask,
+            score_values,
+            context_mask,
+        ) = self._teacher_answer_metadata(len(seq), data, context_len=context_len)
+
+        stats_tracker.get(workflow_context.stat_scope()).scalar(reward=0.0)
+
+        res = {
+            "input_ids": torch.tensor(seq, dtype=torch.int32),
+            "loss_mask": torch.tensor(loss_mask, dtype=torch.int32),
+            "logprobs": torch.tensor(logprobs, dtype=torch.float32),
+            "versions": torch.tensor(versions, dtype=torch.int32),
+            "attention_mask": torch.ones(len(seq), dtype=torch.bool),
+            "rewards": torch.tensor(0.0, dtype=torch.float32),
+            "teacher_answer_prefix_ids": torch.tensor(prefix_values, dtype=torch.int32),
+            "teacher_answer_prefix_mask": torch.tensor(prefix_mask, dtype=torch.bool),
+            "teacher_answer_ids": torch.tensor(answer_values, dtype=torch.int32),
+            "teacher_answer_mask": torch.tensor(answer_mask, dtype=torch.bool),
+            "teacher_answer_score_mask": torch.tensor(score_values, dtype=torch.bool),
+            "teacher_context_mask": torch.tensor(context_mask, dtype=torch.bool),
+        }
+        return {key: value.unsqueeze(0) for key, value in res.items()}
+
+
 class TerminalToolTeacherAnswerRLWorkflow(RolloutWorkflow):
     """Teacher-answer RL for the ``execute_commands`` tool-call payload.
 
@@ -1039,6 +1172,7 @@ class TerminalToolFullTurnTeacherAnswerRLWorkflow(RolloutWorkflow):
 
 
 __all__ = [
+    "GenericToolActionLikelihoodWorkflow",
     "TerminalToolTeacherAnswerRLWorkflow",
     "TerminalToolFullTurnTeacherAnswerRLWorkflow",
     "teacher_answer_reward_postprocess",

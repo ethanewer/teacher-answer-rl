@@ -66,6 +66,22 @@ def main(args: list[str]) -> None:
     workflow_path = (
         "terminal_agent_demo.teacher_answer_rl.workflow.TerminalToolTeacherAnswerRLWorkflow"
     )
+    if workflow_mode in {
+        "generic_likelihood_prefix",
+        "generic-likelihood-prefix",
+        "generic_tool_action_likelihood",
+        "generic-tool-action-likelihood",
+    }:
+        workflow_path = (
+            "terminal_agent_demo.teacher_answer_rl.workflow."
+            "GenericToolActionLikelihoodWorkflow"
+        )
+        workflow_kwargs.update(
+            generic_stop_strings=train_dataset_kwargs.get(
+                "generic_stop_strings",
+                os.environ.get("TA_RL_GENERIC_STOP_STRINGS"),
+            )
+        )
     if workflow_mode in {"full_turn", "full-turn", "full"}:
         workflow_path = (
             "terminal_agent_demo.teacher_answer_rl.workflow."

@@ -416,6 +416,7 @@ class TerminalToolTeacherAnswerLazyDataset(TorchDataset):
                     continue
             return {
                 "messages": history,
+                "tools": row.get("tools"),
                 "teacher_answer": teacher_answer,
                 "student_prefix": student_prefix,
                 "source_task": row.get("source_task"),
