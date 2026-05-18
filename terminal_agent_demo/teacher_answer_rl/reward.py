@@ -205,8 +205,20 @@ def teacher_answer_reward_postprocess(
 ) -> None:
     """Replace placeholder rewards with teacher-answer continuation likelihood."""
     del global_step
-    format_bonus = _env_float("TEACHER_ANSWER_FORMAT_BONUS", 0.0)
-    length_penalty = _env_float("TEACHER_ANSWER_LENGTH_PENALTY", 0.0)
+    format_bonus = float(
+        _config_value(
+            trainer,
+            "teacher_answer_format_bonus",
+            os.environ.get("TEACHER_ANSWER_FORMAT_BONUS", 0.0),
+        )
+    )
+    length_penalty = float(
+        _config_value(
+            trainer,
+            "teacher_answer_length_penalty",
+            os.environ.get("TEACHER_ANSWER_LENGTH_PENALTY", 0.0),
+        )
+    )
     logp_reward_weight = float(_config_value(trainer, "teacher_answer_logp_reward_weight", 1.0))
     use_logp_reward = (
         logp_reward_weight != 0.0
