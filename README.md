@@ -155,7 +155,7 @@ easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
 | Base | `Qwen/Qwen3-4B-Thinking-2507` | easy-10, 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
 | SFT | `epoch0epochstep1384globalstep1384` | easy-10, 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
 | SFT + hand-crafted turn-reward TA-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40-repro-full-r1`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-fullrerun-r1` | 20/50 = 40% |
-| SFT + domain-general likelihood TA-RL | `ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1`, selected step 39 | easy-10, 5 trials/task, `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096` | 20/50 = 40% |
+| SFT + domain-general likelihood TA-RL | `ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1`, selected step 39 | easy-10, 5 trials/task, `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096`; reproduced with `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096-repro-eval-r1` | 20/50 = 40% |
 | SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
 
 The default teacher-answer-RL recipe is:
