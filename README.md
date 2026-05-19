@@ -132,6 +132,16 @@ rollouts/update, 32k context, 2048 max new tokens per turn, and a 4 actor GPU /
 materialized lazily into Terminal-Bench-compatible task directories under the
 run fileroot.
 
+The budgeted GRPO baselines are local single-node recipes designed for the
+2.5-hour, 8xH200 comparison budget. They start from the same final SFT
+checkpoint as TA-RL and use real Terminal-Bench-style environments and final
+verifier rewards rather than teacher trajectories. The easy budget recipe uses
+12 prompts/update, 4 rollouts/prompt, and 1024 max new tokens; it completed 35
+updates in 5114.73s. The medium matched budget recipe uses the same b12/s4
+shape and completed 35 updates in 7289.97s. The medium b16/s2/o2048 variant is
+less sample-matched but was the strongest historical medium GRPO family under
+the same compute budget; its step-14 checkpoint was reached at 7932.52s.
+
 Runtime metrics are written under:
 
 ```text
@@ -157,6 +167,9 @@ easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
 | SFT + hand-crafted turn-reward TA-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40-repro-full-r1`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-fullrerun-r1` | 20/50 = 40% |
 | SFT + domain-general likelihood TA-RL | `ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1`, selected step 39 | easy-10, 5 trials/task, `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096`; reproduced with `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096-repro-eval-r1` | 20/50 = 40% |
 | SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
+| SFT + GRPO, easy budget | `grpo-budget-easy-from-sft-b12-s4-o1024-s35`, selected step 34 | easy-10, 5 trials/task, `grpo-budget-easy-b12s4-s35-easy10-a5-o4096`; train time 5114.73s | 18/50 = 36% |
+| SFT + GRPO, medium matched budget | `grpo-budget-medium-odd-from-sft-b12-s4-o1024-s35`, selected step 9 | easy-10, 5 trials/task, `grpo-budget-medium-b12s4-s9-easy10-a5-o4096`; full run train time 7289.97s | 12/50 = 24% |
+| SFT + GRPO, medium b16/s2 budget | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 14 | easy-10, 5 trials/task, `grpo-budget-medium-b16s2-s14-easy10-a5-o4096`; checkpoint reached at 7932.52s | 12/50 = 24% |
 
 The default teacher-answer-RL recipe is:
 
@@ -190,6 +203,19 @@ The SFT + GRPO row uses:
 AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_ta_comparable_b16_s2_o2048_s50.yaml
 AReaL/terminal_agent_demo/grpo/run_odd_medium_from_sft_ta_comparable_b16_s2_o2048_s50.sbatch
 ```
+
+The 2.5-hour GRPO budget recipes are:
+
+```text
+AReaL/terminal_agent_demo/grpo/config_easy_from_sft_budget_b12_s4_o1024_s35.yaml
+AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_budget_b12_s4_o1024_s35.yaml
+AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_budget_b16_s2_o2048_s15.yaml
+```
+
+Under this budget, the easy GRPO recipe exceeded the older long-run GRPO score.
+The medium budget variants did not match the longer 50-step medium GRPO run:
+the best validated under-budget medium checkpoints reached 12/50, while the
+longer b16/s2 step-34 and step-44 checkpoints reached 14/50.
 
 ## Current Smoke Status
 
