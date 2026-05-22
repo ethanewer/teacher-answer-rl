@@ -157,28 +157,50 @@ terminal_agent_demo/eval/run_terminal_bench_easy10_split_slurm_cpu.sh eval-name 
 
 ## Confirmed Results
 
-Terminal-Bench scores below use the Terminus tool-calling Harbor harness on the
-easy-10 split. Each row is a 10-task, 50-trial evaluation: 5 trials per task.
+Terminal-Bench scores below use the Terminus tool-calling Harbor harness. The
+combined score is the old easy-10 split plus the new additional-10 split:
+20 tasks, 5 trials per task, 100 trials total. Rows without complete 100-trial
+coverage are omitted here and kept in
+`AReaL/terminal_agent_demo/additional-results.md`.
 
-| Model / recipe | Checkpoint | Eval setting | Score |
-| --- | --- | --- | --- |
-| Base | `Qwen/Qwen3-4B-Thinking-2507` | easy-10, 5 trials/task, `harbor_jobs_r6` | 3/50 = 6% |
-| SFT | `epoch0epochstep1384globalstep1384` | easy-10, 5 trials/task, `harbor_jobs_r6` | 13/50 = 26% |
-| SFT + hand-crafted turn-reward TA-RL | `ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40-repro-full-r1`, selected step 39 | easy-10, 5 trials/task, `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-fullrerun-r1` | 20/50 = 40% |
-| SFT + domain-general likelihood TA-RL | `ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1`, selected step 39 | easy-10, 5 trials/task, `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096`; reproduced with `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096-repro-eval-r1` | 20/50 = 40% |
-| SFT + GRPO | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 34 | easy-10, 5 trials/task, `grpo-medium-b16s2-s34-ecrbuild-easy10-t4096-a5-20260515` | 14/50 = 28% |
-| SFT + GRPO, easy budget | `grpo-budget-easy-from-sft-b12-s4-o1024-s35`, selected step 34 | easy-10, 5 trials/task, `grpo-budget-easy-b12s4-s35-easy10-a5-o4096`; train time 5114.73s | 18/50 = 36% |
-| SFT + GRPO, medium matched budget | `grpo-budget-medium-odd-from-sft-b12-s4-o1024-s35`, selected step 9 | easy-10, 5 trials/task, `grpo-budget-medium-b12s4-s9-easy10-a5-o4096`; full run train time 7289.97s | 12/50 = 24% |
-| SFT + GRPO, medium b16/s2 budget | `grpo-ta-comparable-from-sft-medium-odd-b16-s2-32k-o2048-a4r4-s50`, selected step 14 | easy-10, 5 trials/task, `grpo-budget-medium-b16s2-s14-easy10-a5-o4096`; checkpoint reached at 7932.52s | 12/50 = 24% |
+| Model / recipe | Training data | Train runtime | Full eval score |
+| --- | --- | ---: | ---: |
+| Base Qwen3-4B-Thinking | none | 0h | 3/100 |
+| SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 17/100 |
+| SFT + hand-crafted turn-reward TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
+| SFT + domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
+| SFT + GRPO best | `terminal_synthetic_tasks/easy/manifest.csv` | 5114.73s / 1.42h | 24/100 |
 
-The default teacher-answer-RL recipe is:
+The top-level table is intentionally limited to full 100-trial evals. Per-task
+additional-10 results, medium-only rows, mixed GRPO, and eval job IDs are in:
 
 ```text
-AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml
+AReaL/terminal_agent_demo/additional-results.md
 ```
 
-It is the RL-only, hand-crafted turn-reward command-presence/completion recipe
-used for the confirmed SFT + hand-crafted turn-reward TA-RL result above.
+Training-time figures are committed under `figures/`:
+
+```text
+figures/tb_perf_vs_rl_training_time.{png,svg,pdf}
+figures/grpo_task_reward_vs_training_step.{png,svg,pdf}
+```
+
+Regenerate them with:
+
+```bash
+AReaL/.venv/bin/python figures/plot_tb_perf_vs_rl_time.py
+AReaL/.venv/bin/python figures/plot_grpo_reward_vs_step.py
+```
+
+The hand-crafted turn-reward TA-RL easy-selected row uses:
+
+```text
+AReaL/terminal_agent_demo/teacher_answer_rl/config_easy_cmdpresence_rlonly_cont_gs39_strongcomplete_local_s40.yaml
+```
+
+This is an RL-only, hand-crafted turn-reward command-presence/completion recipe.
+It is terminal-harness-specific: it scores similarity between the student's
+generated `execute_commands` action and the corpus teacher action.
 
 A confirmed domain-general teacher-answer recipe is:
 
@@ -197,25 +219,25 @@ teacher continuation, so it is intended to apply to any tool-calling agent
 domain with reference trajectories. It does not parse terminal commands or use
 terminal-specific action-similarity rewards.
 
-The SFT + GRPO row uses:
-
-```text
-AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_ta_comparable_b16_s2_o2048_s50.yaml
-AReaL/terminal_agent_demo/grpo/run_odd_medium_from_sft_ta_comparable_b16_s2_o2048_s50.sbatch
-```
-
-The 2.5-hour GRPO budget recipes are:
+The easy GRPO row uses:
 
 ```text
 AReaL/terminal_agent_demo/grpo/config_easy_from_sft_budget_b12_s4_o1024_s35.yaml
-AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_budget_b12_s4_o1024_s35.yaml
-AReaL/terminal_agent_demo/grpo/config_odd_medium_from_sft_budget_b16_s2_o2048_s15.yaml
 ```
 
-Under this budget, the easy GRPO recipe exceeded the older long-run GRPO score.
-The medium budget variants did not match the longer 50-step medium GRPO run:
-the best validated under-budget medium checkpoints reached 12/50, while the
-longer b16/s2 step-34 and step-44 checkpoints reached 14/50.
+The mixed TA-RL rows in `additional-results.md` use:
+
+```text
+AReaL/terminal_agent_demo/teacher_answer_rl/config_mixed_easy50_mediumodd50_cmdpresence_s1000.yaml
+AReaL/terminal_agent_demo/teacher_answer_rl/config_mixed_easy50_mediumodd50_general_likelihood_prefix_short_n4_s1000.yaml
+```
+
+Additional GRPO budget recipes are documented in
+`AReaL/terminal_agent_demo/additional-results.md`. Under the 2.5-hour budget,
+the easy GRPO recipe exceeded the older long-run GRPO score. The medium budget
+variants did not match the longer 50-step medium GRPO run: the best validated
+under-budget medium checkpoints reached 12/50 on easy-10, while the longer
+b16/s2 step-34 and step-44 checkpoints reached 14/50.
 
 ## Current Smoke Status
 
