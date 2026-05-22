@@ -112,11 +112,19 @@ Teacher-answer RL:
 terminal_agent_demo/teacher_answer_rl/run.sh
 ```
 
-This uses the converted-data teacher-answer split. The student samples the
-assistant prefix up to the `commands` key inside the tool arguments. The reward
-postprocess appends the teacher continuation starting at `commands`, including
-`task_complete` and the assistant close, and assigns the average log-probability
-of that continuation as the scalar reward for the sampled student prefix.
+There are two teacher-answer-RL families in this directory:
+
+- Domain-general likelihood TA-RL. The student samples a partial next action,
+  then the reward appends the teacher continuation and uses reference-model
+  likelihood of that continuation as the scalar reward. This does not depend on
+  terminal-specific action semantics, only on an LLM agent trajectory where a
+  teacher next action is available.
+- Terminal-specific hand-crafted turn reward. This is a hand-crafted,
+  turn-based reward function for assessing similarity of student and teacher
+  actions in the Terminus `execute_commands` harness. It rewards valid tool-call
+  syntax, command presence, command/action similarity, completion agreement, and
+  short non-repetitive outputs. Treat this as a strong terminal-agent baseline,
+  not as the domain-general teacher-answer algorithm.
 
 GRPO:
 
@@ -198,6 +206,107 @@ terminal_agent_demo/grpo/run_even_medium_real.sh
 terminal_agent_demo/grpo/prepare_matched_tasks.py
 terminal_agent_demo/grpo/prepare_matched_medium_tasks.sh
 ```
+
+## Mixed Easy/Medium-Odd Four-Hour Comparison
+
+The mixed comparison uses a deterministic 50/50 dataset: easy converted teacher
+turns plus medium odd-row converted teacher turns. The preparation script also
+remaps teacher-reference cache offsets so likelihood rewards use the correct
+teacher rows after mixing:
+
+```bash
+PYTHONPATH=. .venv/bin/python terminal_agent_demo/scripts/prepare_mixed_easy_medium_odd_data.py --force
+```
+
+Artifacts:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl.teacher_refs.v2.json
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_mixed_easy50_medium_odd50.synthetic_tasks_manifest.csv
+```
+
+Recipes:
+
+```text
+terminal_agent_demo/teacher_answer_rl/config_mixed_easy50_mediumodd50_cmdpresence_s1000.yaml
+terminal_agent_demo/teacher_answer_rl/config_mixed_easy50_mediumodd50_general_likelihood_prefix_short_n4_s1000.yaml
+terminal_agent_demo/grpo/config_mixed_easy50_mediumodd50_from_sft_b12_s4_o1024_s64.yaml
+```
+
+The two TA-RL recipes train for 1000 updates from the same medium-even SFT
+checkpoint. The GRPO recipe uses real Terminal-Bench-style environments from the
+matched mixed manifest with 12 prompts/update, 4 completions/prompt, 1024 max
+new tokens/turn, 25 max turns, 48 concurrent workers, and 64 updates. The first
+mixed GRPO run used an 80-step config, but it was stopped at step 64 because the
+full 80-step target was projected to exceed the four-hour budget; the `s64`
+config records the validated budget.
+
+The mixed final checkpoints are reported in the combined 20-task table below
+only when both the old easy-10 eval and the new additional-10 eval were run for
+100 total trials. Mixed GRPO currently has only easy-10 coverage, so it is kept
+out of the README comparison table and recorded in `additional-results.md`.
+
+The first mixed GRPO eval attempt failed before agent execution because Docker
+had exhausted its predefined network address pools. Removing stale task networks
+and rerunning the same checkpoint produced the valid easy-10 result recorded in
+`additional-results.md`.
+
+Why the newer mixed recipes underperformed the best TA-RL rows in the earlier
+README comparisons:
+
+- The best TA-RL rows were easy-task-selected checkpoints from short easy-only
+  runs: hand-crafted TA-RL scored 21/50 (42%) and domain-general likelihood
+  TA-RL scored 20/50 (40%) on easy-10. GRPO's best checkpoint was also the easy
+  recipe, at 18/50 (36%).
+- The newer mixed recipes trained to the final checkpoint on a 50/50
+  easy/medium-odd distribution. On the same easy-10 eval, those final
+  checkpoints dropped to 15/50 (30%) for hand-crafted TA-RL, 10/50 (20%) for
+  likelihood TA-RL, and 12/50 (24%) for mixed GRPO.
+- The medium-odd half makes the train distribution harder and more timeout
+  prone under a fixed 4h budget. The effect was largest for likelihood TA-RL:
+  its mixed checkpoint had 33 easy-10 timeouts, versus 10 for the easy-selected
+  likelihood checkpoint.
+- The mixed runs were not checkpoint-selected on easy validation; they report
+  the final budget checkpoint. That makes them useful for the mixed-difficulty
+  question, but they are not the same comparison as the easy-selected README
+  winners.
+
+## Additional 10-Task Eval
+
+The additional eval task list is:
+
+```text
+terminal_agent_demo/eval/additional10_tasks.txt
+```
+
+It contains `sparql-university`, `write-compressor`,
+`fix-code-vulnerability`, `git-multibranch`, `hf-model-inference`,
+`large-scale-text-editing`, `merge-diff-arc-agi-task`,
+`openssl-selfsigned-cert`, `portfolio-optimization`, and
+`pytorch-model-cli`.
+
+The combined table below uses the old easy-10 split plus the new additional-10
+split, 5 attempts/task, max 40 turns, 4096 max output tokens, temperature 0.2,
+top-p 0.8, and top-k 20. Rows without complete 100-trial coverage are omitted
+from this README table and are tracked in `additional-results.md`. The easy
+TA-RL additional-10 evals were run as four task shards with one active Docker
+environment per shard to avoid Docker network address-pool exhaustion; the
+earlier high-concurrency shard attempt was discarded because it failed before
+agent execution. GRPO best is the same checkpoint as GRPO easy, so it is not
+duplicated.
+
+| Model | Training data | Train runtime | Easy-10 old eval | Additional-10 new eval | Combined score |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Hand-crafted turn/action TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 21/50 | 6/50 | 27/100 |
+| Domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 20/50 | 7/50 | 27/100 |
+| GRPO easy/best | `terminal_synthetic_tasks/easy/manifest.csv` | ~1.4h | 18/50 | 6/50 | 24/100 |
+| Hand-crafted turn/action TA-RL, mixed final | `skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl` | 3.28h | 15/50 | 3/50 | 18/100 |
+| Domain-general likelihood TA-RL, mixed final | `skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl` | 3.35h | 10/50 | 1/50 | 11/100 |
+
+Detailed per-eval and per-task results, including base, SFT-medium, medium-only,
+and mixed GRPO rows that do not have full 100-trial coverage, are in
+`additional-results.md`.
 
 Terminal-Bench evaluation:
 

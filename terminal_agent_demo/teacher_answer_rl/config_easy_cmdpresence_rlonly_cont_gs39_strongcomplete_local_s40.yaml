@@ -1,0 +1,665 @@
+experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+trial_name: trial0
+cluster:
+  name_resolve:
+    type: nfs
+    nfs_record_root: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/name_resolve
+    etcd3_addr: localhost:2379
+    ray_actor_name: ray_kv_store
+  cluster_name: local
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  n_nodes: 1
+  n_gpus_per_node: 8
+allocation_mode: ''
+seed: 7
+enable_offload: false
+total_train_epochs: 1
+total_train_steps: 40
+total_train_n_seqs: null
+tokenizer_path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+train_dataset:
+  split: train
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/data/skill_based_easy.terminus_tool.jsonl
+  type: rl
+  batch_size: 8
+  shuffle: false
+  pin_memory: true
+  num_workers: 8
+  num_dataset_workers: 1
+  drop_last: true
+  max_length: 20480
+  dataset_kwargs:
+    split_part: null
+    holdout_size: 0
+    shuffle_records: false
+    shuffle_source_groups: true
+    enable_thinking: true
+    lazy_tokenize: true
+    workflow_mode: full_turn
+    teacher_answer_start: tool_call
+    teacher_answer_scorer: ref
+    teacher_answer_score_mode: commands
+    teacher_answer_logp_reward_weight: 0.0
+    teacher_loss_span: tool_call
+    syntax_reward_on_teacher_row: true
+    supervise_teacher_answer: false
+    teacher_answer_supervised_weight: 0.0
+    teacher_answer_supervised_score_mode: all
+    teacher_answer_supervised_max_prefix_tokens: 128
+    teacher_answer_reward_norm: group
+    teacher_answer_reward_norm_group_size: 2
+    teacher_command_match_reward_weight: 1.5
+    teacher_command_presence_reward_weight: 0.4
+    teacher_command_newline_reward_weight: 0.05
+    teacher_completion_match_reward_weight: 2.0
+    teacher_empty_completion_reward_weight: 0.5
+    teacher_command_count_reward_weight: 0.2
+    teacher_repeated_command_penalty_weight: 1.0
+    teacher_reward_requires_valid_syntax: false
+    drop_invalid_teacher_row_loss: false
+    syntax_reward_weight: 1.0
+    valid_syntax_reward: 0.5
+    invalid_syntax_reward: -1.0
+    syntax_thinking_length_penalty_weight: 0.0
+    syntax_output_length_penalty_weight: 0.12
+    emit_syntax_view: true
+    emit_valid_syntax_view: false
+  scheduling_spec: null
+  setup_timeout: 120.0
+valid_dataset: null
+saver:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  freq_epochs: null
+  freq_steps: 10
+  freq_secs: null
+  mode: auto
+evaluator:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+  eval_before_train: false
+stats_logger:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  wandb:
+    mode: disabled
+    wandb_base_url: ''
+    wandb_api_key: ''
+    entity: null
+    project: null
+    name: null
+    job_type: null
+    group: null
+    notes: null
+    tags: null
+    config: null
+    id_suffix: train
+  swanlab:
+    project: null
+    name: null
+    config: null
+    logdir: null
+    mode: disabled
+    api_key: null
+  tensorboard:
+    path: null
+  trackio:
+    mode: disabled
+    project: null
+    name: null
+    space_id: null
+perf_tracer: null
+memory_profiler: null
+recover:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  freq_epochs: null
+  freq_steps: null
+  freq_secs: null
+  mode: disabled
+  retries: 3
+  no_save_optim: false
+  no_load_optim: false
+sglang:
+  model_path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+  random_seed: 7
+  skip_tokenizer_init: false
+  disable_cuda_graph: false
+  disable_radix_cache: true
+  disable_cuda_graph_padding: false
+  enable_nccl_nvls: false
+  disable_outlines_disk_cache: false
+  disable_custom_all_reduce: false
+  disable_overlap_schedule: false
+  enable_mixed_chunk: false
+  enable_dp_attention: false
+  enable_ep_moe: false
+  enable_torch_compile: false
+  torch_compile_max_bs: 32
+  cuda_graph_max_bs: null
+  cuda_graph_bs: null
+  torchao_config: ''
+  enable_nan_detection: false
+  enable_p2p_check: false
+  triton_attention_reduce_in_fp32: false
+  triton_attention_num_kv_splits: 8
+  num_continuous_decode_steps: 1
+  enable_memory_saver: false
+  allow_auto_truncate: false
+  attention_backend: flashinfer
+  enable_multimodal: false
+  sampling_backend: null
+  context_length: 20480
+  mem_fraction_static: 0.7
+  max_running_requests: 256
+  chunked_prefill_size: -1
+  max_prefill_tokens: 20480
+  schedule_policy: lpm
+  schedule_conservativeness: 1.0
+  cpu_offload_gb: 0
+  dtype: bfloat16
+  kv_cache_dtype: auto
+  dp_size: 1
+  ep_size: 1
+  enable_lora: null
+  max_lora_rank: null
+  max_loaded_loras: 8
+  lora_paths: null
+  lora_backend: triton
+  log_level: warning
+  log_level_http: warning
+  log_requests: false
+  log_requests_level: 0
+  show_time_cost: false
+  enable_metrics: true
+  decode_log_interval: 1
+  enable_multithread_load: false
+  enable_return_routed_experts: false
+  python_executable: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-sglang/bin/python
+vllm:
+  model: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+  seed: 7
+  skip_tokenizer_init: false
+  enforce_eager: false
+  dtype: bfloat16
+  distributed_executor_backend: mp
+  max_num_seqs: 64
+  block_size: 16
+  swap_space: 4
+  cpu_offload_gb: 0.0
+  disable_sliding_window: true
+  max_model_len: 20480
+  no_enable_chunked_prefill: false
+  no_enable_prefix_caching: false
+  gpu_memory_utilization: 0.7
+  worker_extension_cls: areal.engine.vllm_ext.vllm_worker_extension.VLLMWorkerExtension
+  enable_sleep_mode: false
+  uvicorn_log_level: warning
+  enable_lora: false
+  max_lora_rank: 16
+  max_loras: 8
+  lora_modules: null
+  python_executable: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-vllm/bin/python
+scheduler:
+  type: local
+  endpoint: http://localhost:8081
+  deploy_mode: separation
+  functioncall_service_domain: http://localhost:8080
+  reward_functioncall_config: {}
+  reward_model_path: ''
+  reward_model_service_url: http://localhost:30000/classify
+  container_type: apptainer
+  container_mounts: /storage:/storage
+  srun_additional_args: --unbuffered --mpi=pmi2 -K --chdir $PWD
+  startup_timeout: 300.0
+  health_check_interval: 5.0
+gconfig:
+  n_samples: 2
+  max_new_tokens: 1024
+  min_new_tokens: 0
+  max_tokens: 20480
+  greedy: false
+  top_p: 0.95
+  top_k: 20
+  temperature: 0.6
+  stop_token_ids: []
+  ignore_eos: false
+  skip_special_tokens: true
+  stop: null
+  frequency_penalty: 0.0
+  lora_name: default_lora
+  use_beam_search: false
+eval_gconfig:
+  n_samples: 1
+  max_new_tokens: 1024
+  min_new_tokens: 0
+  max_tokens: 20480
+  greedy: false
+  top_p: 0.95
+  top_k: 20
+  temperature: 0.6
+  stop_token_ids: []
+  ignore_eos: false
+  skip_special_tokens: true
+  stop: null
+  frequency_penalty: 0.0
+  lora_name: default_lora
+  use_beam_search: false
+rollout:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  fileroot: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo
+  max_concurrent_rollouts: 32
+  queue_size: null
+  consumer_batch_size: 8
+  max_head_offpolicyness: 2
+  enable_rollout_tracing: false
+  check_trajectory_format: true
+  schedule_policy: round_robin
+  tokenizer_path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+  dump_to_file: true
+  setup_timeout: 1200.0
+  request_timeout: 3600.0
+  request_retries: 3
+  pause_grace_period: 0.0
+  scheduling_spec:
+  - cpu: 16
+    gpu: 1
+    mem: 128
+    port_count: 2
+    image: /storage/openpsi/images/areal-latest.sif
+    task_type: worker
+    env_vars:
+      PATH: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-megatron/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      NCCL_SOCKET_IFNAME: enp71s0
+      GLOO_SOCKET_IFNAME: enp71s0
+      NCCL_CUMEM_ENABLE: '0'
+      NCCL_NVLS_ENABLE: '0'
+      CUDA_DEVICE_MAX_CONNECTIONS: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      HF_HOME: /wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+      HF_HUB_ENABLE_HF_TRANSFER: '1'
+      TRITON_CACHE_DIR: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+      TRITON_CACHE_PATH: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+      TRANSFORMERS_NO_TF: '1'
+      USE_TF: '0'
+      USE_FLAX: '0'
+      TF_CPP_MIN_LOG_LEVEL: '3'
+    cmd: python3 -m areal.infra.rpc.rpc_server
+    srun_additional_args: --unbuffered --mpi=pmi2 -K --chdir $PWD
+    additional_bash_cmds: null
+    container_type: apptainer
+    mount: /storage:/storage
+    nodelist: null
+    exclude: null
+    ray_placement_strategy: shared
+  backend: vllm:d4p1t1
+  scheduling_strategy:
+    type: separation
+    target: null
+    fork: true
+  use_lora: false
+  openai: null
+  return_routed_experts: false
+actor:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+  attn_impl: flash_attention_2
+  use_kernels: false
+  init_from_scratch: false
+  is_critic: false
+  temperature: 0.6
+  mb_spec:
+    n_mbs: 1
+    granularity: 1
+    max_tokens_per_mb: 20480
+    n_mbs_divisor: 1
+    packing_algorithm: ffd
+  pad_to_maximum: true
+  disable_dropout: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  grad_reduce_dtype: float32
+  optimizer:
+    type: adam
+    lr: 7.0e-08
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1.0e-08
+    min_lr_ratio: 0.0
+    lr_scheduler_type: constant
+    warmup_steps_proportion: 0.001
+    initial_loss_scale: 4294967296.0
+    min_loss_scale: 1.0
+    loss_scale_window: 5.0
+    hysteresis: 2
+    gradient_clipping: 1.0
+  weight_update_mode: xccl
+  fsdp:
+    wrap_policy: null
+    offload_params: false
+    memory_efficient_load: false
+    per_layer_optim_step: false
+    optim_step_prefetch_layers: 1
+    shard_vision_across_sp: false
+  archon:
+    attn_type: varlen
+    offload_params: false
+    enable_compile: true
+    ac_mode: selective
+    selective_ac_option: op
+    ac_memory_budget: 0.5
+    ac_preserve_rng_state: false
+    ac_debug: false
+    pp_schedule: Interleaved1F1B
+    pp_layers_per_stage: null
+    pp_first_stage_less_layers: 1
+    pp_last_stage_less_layers: 1
+    reshard_after_forward_policy: default
+    fp8_config:
+      mode: disabled
+      exclude_modules:
+      - output
+      - router
+      - score
+      include_experts: false
+      use_triton: true
+    use_deterministic_algorithms: false
+    moe_router_dtype: fp32
+  megatron:
+    wrap_with_ddp: true
+    use_torch_fsdp2: false
+    use_custom_fsdp: false
+    ddp:
+      grad_reduce_in_fp32: true
+      overlap_grad_reduce: false
+      overlap_param_gather: false
+      align_param_gather: false
+      use_distributed_optimizer: true
+      check_for_nan_in_grad: false
+      bucket_size: null
+      average_in_collective: false
+      fp8_param_gather: false
+    virtual_pipeline_parallel_size: 1
+    overlap_param_gather_with_optimizer_step: false
+    use_precision_aware_optimizer: false
+    main_grads_dtype: float32
+    main_params_dtype: float32
+    exp_avg_dtype: float32
+    exp_avg_sq_dtype: float32
+    async_save: false
+    use_checkpoint_opt_param_scheduler: true
+    use_deterministic_algorithms: false
+    recompute_granularity: full
+    recompute_method: uniform
+    recompute_num_layers: 1
+    distribute_saved_activations: null
+    recompute_modules: null
+    moe_router_dtype: fp32
+    moe_shared_expert_overlap: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: alltoall
+    moe_permute_fusion: false
+    fp8_config: null
+    bridge_type: mbridge
+  offload: false
+  use_lora: false
+  lora_rank: 32
+  lora_alpha: 16
+  target_modules: []
+  peft_type: lora
+  enable_tree_training: true
+  scheduling_spec:
+  - cpu: 16
+    gpu: 1
+    mem: 128
+    port_count: 2
+    image: /storage/openpsi/images/areal-latest.sif
+    task_type: worker
+    env_vars:
+      PATH: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-megatron/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      NCCL_SOCKET_IFNAME: enp71s0
+      GLOO_SOCKET_IFNAME: enp71s0
+      NCCL_CUMEM_ENABLE: '0'
+      NCCL_NVLS_ENABLE: '0'
+      CUDA_DEVICE_MAX_CONNECTIONS: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      HF_HOME: /wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+      HF_HUB_ENABLE_HF_TRANSFER: '1'
+      TRITON_CACHE_DIR: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+      TRITON_CACHE_PATH: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+      TRANSFORMERS_NO_TF: '1'
+      USE_TF: '0'
+      USE_FLAX: '0'
+      TF_CPP_MIN_LOG_LEVEL: '3'
+    cmd: python3 -m areal.infra.rpc.rpc_server
+    srun_additional_args: --unbuffered --mpi=pmi2 -K --chdir $PWD
+    additional_bash_cmds: null
+    container_type: apptainer
+    mount: /storage:/storage
+    nodelist: null
+    exclude: null
+    ray_placement_strategy: shared
+  backend: megatron:d4p1t1
+  _version: v1
+  admin_api_key: areal-admin-key
+  log_level: warning
+  request_timeout: 3600.0
+  setup_timeout: 3600.0
+  scheduling_strategy:
+    type: separation
+    target: null
+    fork: true
+  ppo_n_minibatches: 1
+  eps_clip: 0.2
+  eps_clip_higher: null
+  c_clip: null
+  m2_threshold: null
+  reward_norm: null
+  reward_scaling: 1.0
+  reward_bias: 0.0
+  reward_clip: 20.0
+  overlong_reward_penalty: false
+  overlong_tokens: null
+  overlong_penalty_factor: null
+  mask_no_eos_with_zero: false
+  discount: 1.0
+  gae_lambda: 1.0
+  adv_norm:
+    mean_level: batch
+    mean_leave1out: false
+    std_level: batch
+    std_unbiased: true
+    eps: 1.0e-05
+    group_size: 1
+  kl_ctl: 0.0
+  kl_estimator: k3
+  use_sapo_loss: false
+  sapo_tau_pos: 1.0
+  sapo_tau_neg: 1.05
+  recompute_logprob: false
+  use_decoupled_loss: false
+  rejection_sampling: null
+  importance_sampling_level: token
+  prox_logp_method: recompute
+  log_agent_stats: false
+  log_agent_stats_keys: []
+  max_new_tokens: 1024
+ref:
+  experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+  trial_name: trial0
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+  attn_impl: flash_attention_2
+  use_kernels: false
+  init_from_scratch: false
+  is_critic: false
+  temperature: 1.0
+  mb_spec:
+    n_mbs: 1
+    granularity: 1
+    max_tokens_per_mb: 20480
+    n_mbs_divisor: 1
+    packing_algorithm: ffd
+  pad_to_maximum: false
+  disable_dropout: true
+  gradient_checkpointing: false
+  dtype: bfloat16
+  grad_reduce_dtype: float32
+  optimizer: null
+  weight_update_mode: xccl
+  fsdp:
+    wrap_policy: null
+    offload_params: false
+    memory_efficient_load: false
+    per_layer_optim_step: false
+    optim_step_prefetch_layers: 1
+    shard_vision_across_sp: false
+  archon:
+    attn_type: varlen
+    offload_params: false
+    enable_compile: true
+    ac_mode: selective
+    selective_ac_option: op
+    ac_memory_budget: 0.5
+    ac_preserve_rng_state: false
+    ac_debug: false
+    pp_schedule: Interleaved1F1B
+    pp_layers_per_stage: null
+    pp_first_stage_less_layers: 1
+    pp_last_stage_less_layers: 1
+    reshard_after_forward_policy: default
+    fp8_config:
+      mode: disabled
+      exclude_modules:
+      - output
+      - router
+      - score
+      include_experts: false
+      use_triton: true
+    use_deterministic_algorithms: false
+    moe_router_dtype: fp32
+  megatron:
+    wrap_with_ddp: true
+    use_torch_fsdp2: false
+    use_custom_fsdp: false
+    ddp:
+      grad_reduce_in_fp32: true
+      overlap_grad_reduce: false
+      overlap_param_gather: false
+      align_param_gather: false
+      use_distributed_optimizer: true
+      check_for_nan_in_grad: false
+      bucket_size: null
+      average_in_collective: false
+      fp8_param_gather: false
+    virtual_pipeline_parallel_size: 1
+    overlap_param_gather_with_optimizer_step: false
+    use_precision_aware_optimizer: false
+    main_grads_dtype: float32
+    main_params_dtype: float32
+    exp_avg_dtype: float32
+    exp_avg_sq_dtype: float32
+    async_save: false
+    use_checkpoint_opt_param_scheduler: true
+    use_deterministic_algorithms: false
+    recompute_granularity: full
+    recompute_method: uniform
+    recompute_num_layers: 1
+    distribute_saved_activations: null
+    recompute_modules: null
+    moe_router_dtype: fp32
+    moe_shared_expert_overlap: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: alltoall
+    moe_permute_fusion: false
+    fp8_config: null
+    bridge_type: mbridge
+  offload: false
+  use_lora: false
+  lora_rank: 32
+  lora_alpha: 16
+  target_modules: []
+  peft_type: lora
+  enable_tree_training: false
+  scheduling_spec:
+  - cpu: 16
+    gpu: 1
+    mem: 128
+    port_count: 2
+    image: /storage/openpsi/images/areal-latest.sif
+    task_type: worker
+    env_vars:
+      PATH: /wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-megatron/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      NCCL_SOCKET_IFNAME: enp71s0
+      GLOO_SOCKET_IFNAME: enp71s0
+      NCCL_CUMEM_ENABLE: '0'
+      NCCL_NVLS_ENABLE: '0'
+      CUDA_DEVICE_MAX_CONNECTIONS: '1'
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      HF_HOME: /wbl-fast/usrs/ee/teacher-answer-rl/hf_cache
+      HF_HUB_ENABLE_HF_TRANSFER: '1'
+      TRITON_CACHE_DIR: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+      TRITON_CACHE_PATH: /wbl-fast/usrs/ee/teacher-answer-rl/triton
+      TRANSFORMERS_NO_TF: '1'
+      USE_TF: '0'
+      USE_FLAX: '0'
+      TF_CPP_MIN_LOG_LEVEL: '3'
+    cmd: python3 -m areal.infra.rpc.rpc_server
+    srun_additional_args: --unbuffered --mpi=pmi2 -K --chdir $PWD
+    additional_bash_cmds: null
+    container_type: apptainer
+    mount: /storage:/storage
+    nodelist: null
+    exclude: null
+    ray_placement_strategy: shared
+  backend: megatron:d4p1t1
+  _version: v1
+  admin_api_key: areal-admin-key
+  log_level: warning
+  request_timeout: 3600.0
+  setup_timeout: 3600.0
+  scheduling_strategy:
+    type: colocation
+    target: actor
+    fork: true
+  ppo_n_minibatches: 4
+  eps_clip: 0.2
+  eps_clip_higher: null
+  c_clip: null
+  m2_threshold: null
+  reward_norm: null
+  reward_scaling: 1.0
+  reward_bias: 0.0
+  reward_clip: 20.0
+  overlong_reward_penalty: false
+  overlong_tokens: null
+  overlong_penalty_factor: null
+  mask_no_eos_with_zero: false
+  discount: 1.0
+  gae_lambda: 1.0
+  adv_norm: null
+  kl_ctl: 0.1
+  kl_estimator: k1
+  use_sapo_loss: false
+  sapo_tau_pos: 1.0
+  sapo_tau_neg: 1.05
+  recompute_logprob: false
+  use_decoupled_loss: false
+  rejection_sampling: null
+  importance_sampling_level: token
+  prox_logp_method: recompute
+  log_agent_stats: false
+  log_agent_stats_keys: []
+  max_new_tokens: 1024
+critic: null
+teacher: null
+dynamic_bs: false

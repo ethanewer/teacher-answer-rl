@@ -291,7 +291,11 @@ class PPOTrainer:
         )
 
         self.eval_rollout = None
-        if not self._online_mode:
+        if (
+            not self._online_mode
+            and self.config.valid_dataset is not None
+            and valid_dataset is not None
+        ):
             self.eval_rollout = self._init_rollout(
                 config.rollout, is_eval=True, lora_path=initial_lora_path
             )
