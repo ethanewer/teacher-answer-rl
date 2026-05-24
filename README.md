@@ -132,15 +132,23 @@ rollouts/update, 32k context, 2048 max new tokens per turn, and a 4 actor GPU /
 materialized lazily into Terminal-Bench-compatible task directories under the
 run fileroot.
 
-The budgeted GRPO baselines are local single-node recipes designed for the
-2.5-hour, 8xH200 comparison budget. They start from the same final SFT
-checkpoint as TA-RL and use real Terminal-Bench-style environments and final
-verifier rewards rather than teacher trajectories. The easy budget recipe uses
-12 prompts/update, 4 rollouts/prompt, and 1024 max new tokens; it completed 35
-updates in 5114.73s. The medium matched budget recipe uses the same b12/s4
-shape and completed 35 updates in 7289.97s. The medium b16/s2/o2048 variant is
-less sample-matched but was the strongest historical medium GRPO family under
-the same compute budget; its step-14 checkpoint was reached at 7932.52s.
+The default GRPO recipe starts from the same final SFT checkpoint as TA-RL and
+uses real Terminal-Bench-style environments and final verifier rewards rather
+than teacher trajectories. The current default/best recipe is the
+OpenThoughts-style easy-task run with 8 prompts/update, 8 rollouts/prompt, full
+trajectory rewards, 1024 max new tokens, 8 turns, no KL, no uniform-reward
+filter, and asymmetric PPO clipping. The validated 45-step run completed in
+10620.94s / 2.95h. Its held-out easy-subset eval reward increased from 31.25 to
+65.625 out of 100 over training.
+
+Earlier budgeted GRPO baselines used 12 prompts/update, 4 rollouts/prompt, and
+1024 max new tokens under the 2.5-hour, 8xH200 comparison budget. The b12/s4
+easy run completed 35 updates in 5114.73s and is still the latest GRPO run with
+complete 100-trial external eval coverage. The medium matched budget recipe
+uses the same b12/s4 shape and completed 35 updates in 7289.97s. The medium
+b16/s2/o2048 variant is less sample-matched but was the strongest historical
+medium GRPO family under the same compute budget; its step-14 checkpoint was
+reached at 7932.52s.
 
 Runtime metrics are written under:
 
@@ -169,7 +177,7 @@ coverage are omitted here and kept in
 | SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 17/100 |
 | SFT + hand-crafted turn-reward TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
 | SFT + domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
-| SFT + GRPO best | `terminal_synthetic_tasks/easy/manifest.csv` | 5114.73s / 1.42h | 24/100 |
+| SFT + GRPO previous full-eval baseline | `terminal_synthetic_tasks/easy/manifest.csv` | 5114.73s / 1.42h | 24/100 |
 
 The top-level table is intentionally limited to full 100-trial evals. Per-task
 additional-10 results, medium-only rows, mixed GRPO, and eval job IDs are in:
@@ -183,6 +191,7 @@ Training-time figures are committed under `figures/`:
 ```text
 figures/tb_perf_vs_rl_training_time.{png,svg,pdf}
 figures/grpo_task_reward_vs_training_step.{png,svg,pdf}
+figures/default_grpo_train_eval_vs_time.{png,svg,pdf}
 ```
 
 Regenerate them with:
@@ -190,6 +199,7 @@ Regenerate them with:
 ```bash
 AReaL/.venv/bin/python figures/plot_tb_perf_vs_rl_time.py
 AReaL/.venv/bin/python figures/plot_grpo_reward_vs_step.py
+AReaL/.venv/bin/python figures/plot_default_grpo_train_eval_vs_time.py
 ```
 
 The hand-crafted turn-reward TA-RL easy-selected row uses:
@@ -219,11 +229,18 @@ teacher continuation, so it is intended to apply to any tool-calling agent
 domain with reference trajectories. It does not parse terminal commands or use
 terminal-specific action-similarity rewards.
 
-The easy GRPO row uses:
+The default GRPO best recipe is:
 
 ```text
-AReaL/terminal_agent_demo/grpo/config_easy_from_sft_budget_b12_s4_o1024_s35.yaml
+AReaL/terminal_agent_demo/grpo/config.yaml
+AReaL/terminal_agent_demo/grpo/config_easy_openthoughts_b8_s8_o1024_t8_trajectory_valid_nofilter_nokl_s45.yaml
 ```
+
+No-argument `terminal_agent_demo/grpo/run.sh` launches this default recipe. The
+previous complete 100-trial GRPO full-eval baseline used
+`AReaL/terminal_agent_demo/grpo/config_easy_from_sft_budget_b12_s4_o1024_s35.yaml`;
+the new default/best b8/s8 recipe is selected by its improving train reward and
+held-out Terminal-Bench subset eval curve.
 
 The mixed TA-RL rows in `additional-results.md` use:
 
