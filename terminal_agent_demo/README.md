@@ -257,8 +257,8 @@ README comparisons:
 
 - The best TA-RL rows were easy-task-selected checkpoints from short easy-only
   runs: hand-crafted TA-RL scored 21/50 (42%) and domain-general likelihood
-  TA-RL scored 20/50 (40%) on easy-10. GRPO's best checkpoint was also the easy
-  recipe, at 18/50 (36%).
+  TA-RL scored 20/50 (40%) on easy-10. The previous complete external GRPO
+  full-eval checkpoint was also an easy recipe, at 18/50 (36%) on easy-10.
 - The newer mixed recipes trained to the final checkpoint on a 50/50
   easy/medium-odd distribution. On the same easy-10 eval, those final
   checkpoints dropped to 15/50 (30%) for hand-crafted TA-RL, 10/50 (20%) for
@@ -293,14 +293,23 @@ from this README table and are tracked in `additional-results.md`. The easy
 TA-RL additional-10 evals were run as four task shards with one active Docker
 environment per shard to avoid Docker network address-pool exhaustion; the
 earlier high-concurrency shard attempt was discarded because it failed before
-agent execution. GRPO best is the same checkpoint as GRPO easy, so it is not
-duplicated.
+agent execution.
+
+The default/best GRPO training recipe is
+`terminal_agent_demo/grpo/config.yaml`, identical to
+`terminal_agent_demo/grpo/config_easy_openthoughts_b8_s8_o1024_t8_trajectory_valid_nofilter_nokl_s45.yaml`.
+It uses 8 prompts/update, 8 rollouts/prompt, trajectory rewards, 1024 max new
+tokens, 8 turns, no KL, no uniform-reward filter, and asymmetric clipping. The
+45-step run completed in 10620.94s / 2.95h and improved held-out easy-subset
+eval from 31.25 to 65.625 out of 100. It does not yet have a complete 100-trial
+external Harbor eval, so the table below keeps the previous complete GRPO
+external full-eval baseline separate.
 
 | Model | Training data | Train runtime | Easy-10 old eval | Additional-10 new eval | Combined score |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Hand-crafted turn/action TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 21/50 | 6/50 | 27/100 |
 | Domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 20/50 | 7/50 | 27/100 |
-| GRPO easy/best | `terminal_synthetic_tasks/easy/manifest.csv` | ~1.4h | 18/50 | 6/50 | 24/100 |
+| GRPO previous full-eval baseline | `terminal_synthetic_tasks/easy/manifest.csv` | ~1.4h | 18/50 | 6/50 | 24/100 |
 | Hand-crafted turn/action TA-RL, mixed final | `skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl` | 3.28h | 15/50 | 3/50 | 18/100 |
 | Domain-general likelihood TA-RL, mixed final | `skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl` | 3.35h | 10/50 | 1/50 | 11/100 |
 

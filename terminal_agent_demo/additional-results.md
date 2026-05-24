@@ -16,7 +16,8 @@ timestamps or the validated recipe budget.
 | SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 13/50 | 4/50 | 17/100 | Easy-10 from the earlier `harbor_jobs_r6` eval; additional-10 from `add10-sft-final-a5-c2-o4096` with 10 agent timeouts |
 | Hand-crafted turn/action TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 21/50 | 6/50 | 27/100 | Additional-10 eval assembled from four c1 shards; 9 add10 agent timeouts |
 | Domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 20/50 | 7/50 | 27/100 | Additional-10 eval assembled from four c1 shards; 7 add10 agent timeouts and 1 terminal runtime exception |
-| GRPO easy/best | `terminal_synthetic_tasks/easy/manifest.csv` | ~1.4h | 18/50 | 6/50 | 24/100 | `add10-grpo-best-easy-s34-a5-c2-o4096`; 12 add10 agent timeouts |
+| GRPO previous full-eval baseline | `terminal_synthetic_tasks/easy/manifest.csv` | ~1.4h | 18/50 | 6/50 | 24/100 | b12/s4 budget recipe, `add10-grpo-best-easy-s34-a5-c2-o4096`; 12 add10 agent timeouts |
+| GRPO default/best, b8/s8 trajectory | `terminal_synthetic_tasks/easy/manifest.csv` | 2.95h | held-out subset: 65.625/100 | not run | - | Default no-argument GRPO recipe; complete external 100-trial Harbor eval not yet run |
 | Hand-crafted turn/action TA-RL, medium-odd | `skill_based_medium.odd_original.terminus_tool.jsonl` | ~0.2h | 11/50 | not run | - | `ta-medium-cmdpresence-s40-r1-easy10-a5-o4096` |
 | Domain-general likelihood TA-RL, medium-odd | `skill_based_medium.odd_original.terminus_tool.jsonl` | ~0.2h | 14/50 | not run | - | `ta-general-likelihood-medium-s40-r1-easy10-a5-o4096` |
 | GRPO medium-odd, b12/s4 | `skill_based_medium.odd_original.synthetic_tasks_manifest.csv` | ~2.0h | 11/50 | not run | - | `grpo-budget-medium-b12s4-s35-easy10-a5-o4096` |
@@ -27,7 +28,7 @@ timestamps or the validated recipe budget.
 
 ## Additional-10 Per-Task Results
 
-| Task | Base | SFT medium-even | TA-RL hand-crafted easy | TA-RL likelihood easy | GRPO easy/best | TA-RL hand-crafted mixed | TA-RL likelihood mixed |
+| Task | Base | SFT medium-even | TA-RL hand-crafted easy | TA-RL likelihood easy | GRPO previous full-eval baseline | TA-RL hand-crafted mixed | TA-RL likelihood mixed |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `sparql-university` | 0/5 | 0/5 | 0/5 | 0/5 | 0/5 | 0/5 | 0/5 |
 | `write-compressor` | 0/5 | 0/5 | 0/5 | 0/5 | 0/5 | 0/5 | 0/5 |
@@ -46,10 +47,10 @@ timestamps or the validated recipe budget.
 | --- | --- |
 | Hand-crafted TA-RL easy, easy-10 | `ta-strongcomplete-visibletool-reminders-v3-lowtemp-easy10-a5-o4096-r1` |
 | Likelihood TA-RL easy, easy-10 | `ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096` |
-| GRPO easy/best, easy-10 | `grpo-budget-easy-b12s4-s35-easy10-a5-o4096` |
+| GRPO previous full-eval baseline, easy-10 | `grpo-budget-easy-b12s4-s35-easy10-a5-o4096` |
 | Hand-crafted TA-RL easy, additional-10 | `add10-tarl-handcrafted-easy-gs39-shard{0..3}-a5-c1-o4096` |
 | Likelihood TA-RL easy, additional-10 | `add10-tarl-likelihood-easy-gs39-shard{0..3}-a5-c1-o4096` |
-| GRPO easy/best, additional-10 | `add10-grpo-best-easy-s34-a5-c2-o4096` |
+| GRPO previous full-eval baseline, additional-10 | `add10-grpo-best-easy-s34-a5-c2-o4096` |
 | Base, additional-10 | `add10-base-qwen3-thinking-a5-c2-o4096` |
 | SFT medium-even, additional-10 | `add10-sft-final-a5-c2-o4096` |
 | Hand-crafted TA-RL mixed, easy-10 | `ta-mixed-cmdpresence-s999-easy10-a5-o4096` |
@@ -77,6 +78,6 @@ main README table. The 0h point is the medium-even SFT checkpoint before RL.
 | Domain-general likelihood TA-RL | 3.28h | step 1299 | 3/100 |
 | GRPO | 0.00h | SFT baseline | 17/100 |
 | GRPO | 0.82h | step 19 | 1/100 |
-| GRPO | 1.42h | README best step 34 | 24/100 |
+| GRPO | 1.42h | previous full-eval step 34 | 24/100 |
 | GRPO | 2.02h | step 49 | 5/100 |
 | GRPO | 3.00h | step 74 | 7/100 |

@@ -8,7 +8,7 @@ source "$REPO_ROOT/terminal_agent_demo/scripts/env_h200.sh"
 if [[ "${1:-}" == "--config" ]]; then
   shift
 fi
-CONFIG="${1:-$REPO_ROOT/terminal_agent_demo/grpo/config_matched_smoke.yaml}"
+CONFIG="${1:-$REPO_ROOT/terminal_agent_demo/grpo/config.yaml}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
