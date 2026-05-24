@@ -139,16 +139,8 @@ OpenThoughts-style easy-task run with 8 prompts/update, 8 rollouts/prompt, full
 trajectory rewards, 1024 max new tokens, 8 turns, no KL, no uniform-reward
 filter, and asymmetric PPO clipping. The validated 45-step run completed in
 10620.94s / 2.95h. Its held-out easy-subset eval reward increased from 31.25 to
-65.625 out of 100 over training.
-
-Earlier budgeted GRPO baselines used 12 prompts/update, 4 rollouts/prompt, and
-1024 max new tokens under the 2.5-hour, 8xH200 comparison budget. The b12/s4
-easy run completed 35 updates in 5114.73s and is still the latest GRPO run with
-complete 100-trial external eval coverage. The medium matched budget recipe
-uses the same b12/s4 shape and completed 35 updates in 7289.97s. The medium
-b16/s2/o2048 variant is less sample-matched but was the strongest historical
-medium GRPO family under the same compute budget; its step-14 checkpoint was
-reached at 7932.52s.
+65.625 out of 100 over training. The full external eval row below uses the
+held-out-best step-39 checkpoint reached at 9502.97s / 2.64h.
 
 Runtime metrics are written under:
 
@@ -177,7 +169,7 @@ coverage are omitted here and kept in
 | SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 17/100 |
 | SFT + hand-crafted turn-reward TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
 | SFT + domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
-| SFT + GRPO previous full-eval baseline | `terminal_synthetic_tasks/easy/manifest.csv` | 5114.73s / 1.42h | 24/100 |
+| SFT + GRPO default/best, easy-selected | `terminal_synthetic_tasks/easy/manifest.csv` | 9502.97s / 2.64h | 17/100 |
 
 The top-level table is intentionally limited to full 100-trial evals. Per-task
 additional-10 results, medium-only rows, mixed GRPO, and eval job IDs are in:
@@ -237,10 +229,12 @@ AReaL/terminal_agent_demo/grpo/config_easy_openthoughts_b8_s8_o1024_t8_trajector
 ```
 
 No-argument `terminal_agent_demo/grpo/run.sh` launches this default recipe. The
-previous complete 100-trial GRPO full-eval baseline used
-`AReaL/terminal_agent_demo/grpo/config_easy_from_sft_budget_b12_s4_o1024_s35.yaml`;
-the new default/best b8/s8 recipe is selected by its improving train reward and
-held-out Terminal-Bench subset eval curve.
+default/best b8/s8 recipe is selected by its improving train reward and
+held-out Terminal-Bench subset eval curve. The 100-trial external eval uses:
+
+```text
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/grpo-openthoughts-easy-from-sft-b8-s8-o1024-t8-trajectory-valid-nofilter-nokl-s45/trial0/default/epoch0epochstep39globalstep39
+```
 
 The mixed TA-RL rows in `additional-results.md` use:
 
@@ -248,13 +242,6 @@ The mixed TA-RL rows in `additional-results.md` use:
 AReaL/terminal_agent_demo/teacher_answer_rl/config_mixed_easy50_mediumodd50_cmdpresence_s1000.yaml
 AReaL/terminal_agent_demo/teacher_answer_rl/config_mixed_easy50_mediumodd50_general_likelihood_prefix_short_n4_s1000.yaml
 ```
-
-Additional GRPO budget recipes are documented in
-`AReaL/terminal_agent_demo/additional-results.md`. Under the 2.5-hour budget,
-the easy GRPO recipe exceeded the older long-run GRPO score. The medium budget
-variants did not match the longer 50-step medium GRPO run: the best validated
-under-budget medium checkpoints reached 12/50 on easy-10, while the longer
-b16/s2 step-34 and step-44 checkpoints reached 14/50.
 
 ## Current Smoke Status
 

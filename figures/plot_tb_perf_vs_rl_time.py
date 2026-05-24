@@ -33,10 +33,7 @@ SERIES = {
         "marker": "^",
         "points": [
             (0.00, 17, "SFT"),
-            (0.82, 1, "s19"),
-            (1.42, 24, "legacy full eval"),
-            (2.02, 5, "s49"),
-            (3.00, 7, "s74"),
+            (2.64, 17, "default full eval"),
         ],
     },
 }
