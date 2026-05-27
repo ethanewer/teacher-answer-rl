@@ -134,13 +134,15 @@ run fileroot.
 
 The default GRPO recipe starts from the same final SFT checkpoint as TA-RL and
 uses real Terminal-Bench-style environments and final verifier rewards rather
-than teacher trajectories. The current default/best recipe is the
-OpenThoughts-style easy-task run with 8 prompts/update, 8 rollouts/prompt, full
-trajectory rewards, 1024 max new tokens, 8 turns, no KL, no uniform-reward
-filter, and asymmetric PPO clipping. The validated 45-step run completed in
-10620.94s / 2.95h. Its held-out easy-subset eval reward increased from 31.25 to
-65.625 out of 100 over training. The full external eval row below uses the
-held-out-best step-39 checkpoint reached at 9502.97s / 2.64h.
+than teacher trajectories. The current default/best recipe uses the easy
+synthetic task manifest, 12 prompts/update, 4 completions/prompt, individual
+turn exports, interleaved grouped rollouts, group mean-only reward
+normalization, 25 turns, 1024 max new tokens, no KL, and asymmetric PPO
+clipping. Its 10-step train reward windows increased from 0.183742 at steps
+1-10 to 0.263940 at steps 30-39; the 36-45 window continued to 0.312020. The
+external 20-task Terminal-Bench eval improved from the 17/100 SFT baseline to
+18/100 at step 19 and 24/100 at step 39. The full external eval row below uses
+the step-39 checkpoint reached at 7527.63s / 2.09h.
 
 Runtime metrics are written under:
 
@@ -169,7 +171,7 @@ coverage are omitted here and kept in
 | SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 17/100 |
 | SFT + hand-crafted turn-reward TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
 | SFT + domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
-| SFT + GRPO default/best, easy-selected | `terminal_synthetic_tasks/easy/manifest.csv` | 9502.97s / 2.64h | 17/100 |
+| SFT + GRPO default/best, easy-selected | `terminal_synthetic_tasks/easy/manifest.csv` | 7527.63s / 2.09h | 24/100 |
 
 The top-level table is intentionally limited to full 100-trial evals. Per-task
 additional-10 results, medium-only rows, mixed GRPO, and eval job IDs are in:
@@ -225,15 +227,16 @@ The default GRPO best recipe is:
 
 ```text
 AReaL/terminal_agent_demo/grpo/config.yaml
-AReaL/terminal_agent_demo/grpo/config_easy_openthoughts_b8_s8_o1024_t8_trajectory_valid_nofilter_nokl_s45.yaml
+AReaL/terminal_agent_demo/grpo/config_default_grpo_b12_s4_o1024_t25_individual_interleaved_meanonly_lr7e7_s40.yaml
+AReaL/terminal_agent_demo/grpo/config_easy_from_sft_b12_s4_o1024_t25_individual_interleaved_meanonly_lr7e7_s70.yaml
 ```
 
 No-argument `terminal_agent_demo/grpo/run.sh` launches this default recipe. The
-default/best b8/s8 recipe is selected by its improving train reward and
-held-out Terminal-Bench subset eval curve. The 100-trial external eval uses:
+default/best b12/s4 recipe is selected by its improving train reward and
+external Terminal-Bench 20-task eval curve. The 100-trial external eval uses:
 
 ```text
-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/grpo-openthoughts-easy-from-sft-b8-s8-o1024-t8-trajectory-valid-nofilter-nokl-s45/trial0/default/epoch0epochstep39globalstep39
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/grpo-easy-from-sft-b12-s4-o1024-t25-individual-interleaved-meanonly-lr7e7-s70/trial0/default/epoch0epochstep39globalstep39
 ```
 
 The mixed TA-RL rows in `additional-results.md` use:

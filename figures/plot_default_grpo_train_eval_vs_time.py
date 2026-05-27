@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 ROOT = Path("/wbl-fast/usrs/ee/teacher-answer-rl")
 OUT_DIR = ROOT / "figures"
-RUN_NAME = "grpo-openthoughts-easy-from-sft-b8-s8-o1024-t8-trajectory-valid-nofilter-nokl-s45"
+RUN_NAME = "grpo-easy-from-sft-b12-s4-o1024-t25-individual-interleaved-meanonly-lr7e7-s70"
 METRICS_PATH = (
     ROOT
     / "areal_runs/terminal-agent-demo/logs/ewer"
@@ -17,6 +17,42 @@ METRICS_PATH = (
     / "trial0/metrics.jsonl"
 )
 CSV_PATH = OUT_DIR / "default_grpo_train_eval_vs_time.csv"
+SFT_BASELINE_SCORE = 17.0
+EVAL_POINTS = {
+    19: (
+        ROOT
+        / "areal_runs/terminal-agent-demo/terminal_bench_eval"
+        / "grpo-meanonly-b12s4-s19-full20-a5-c1-clean-20260527-r2"
+    ),
+    39: (
+        ROOT
+        / "areal_runs/terminal-agent-demo/terminal_bench_eval"
+        / "grpo-meanonly-b12s4-s39-full20-a5-c1-clean-20260527-r1"
+    ),
+}
+EXPECTED_EVAL_ATTEMPTS = 100
+TB20_TASKS = [
+    "modernize-scientific-stack",
+    "log-summary-date-ranges",
+    "multi-source-data-merger",
+    "nginx-request-logging",
+    "git-leak-recovery",
+    "fix-git",
+    "constraints-scheduling",
+    "vulnerable-secret",
+    "regex-log",
+    "sqlite-db-truncate",
+    "sparql-university",
+    "write-compressor",
+    "fix-code-vulnerability",
+    "git-multibranch",
+    "hf-model-inference",
+    "large-scale-text-editing",
+    "merge-diff-arc-agi-task",
+    "openssl-selfsigned-cert",
+    "portfolio-optimization",
+    "pytorch-model-cli",
+]
 
 
 def strip_trailing_whitespace(path: Path) -> None:
@@ -27,7 +63,7 @@ def strip_trailing_whitespace(path: Path) -> None:
     )
 
 
-def moving_average(values: list[float], window: int = 5) -> list[float]:
+def moving_average(values: list[float], window: int = 10) -> list[float]:
     averaged: list[float] = []
     for idx in range(len(values)):
         start = max(0, idx - window + 1)
@@ -46,17 +82,40 @@ def read_metrics_jsonl() -> list[dict[str, float | int | str]]:
 
         step = int(record.get("optimizer_step", record["global_step"] + 1))
         hours = float(record["elapsed_wall_clock_sec"]) / 3600.0
-        eval_reward = metrics.get("eval-rollout/reward")
         rows.append(
             {
                 "step": step,
                 "elapsed_hours": hours,
                 "train_reward_avg": float(train_reward),
-                "eval_subset_reward": "" if eval_reward is None else float(eval_reward),
-                "eval_subset_score": "" if eval_reward is None else 100.0 * float(eval_reward),
             }
         )
     return rows
+
+
+def read_external_tb20_score(eval_root: Path) -> float | None:
+    if not eval_root.exists():
+        return None
+
+    task_results: dict[str, list[tuple[float, str, float]]] = {task: [] for task in TB20_TASKS}
+    for path in eval_root.glob("*/harbor_jobs/*/*/*/result.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        task = (data.get("task_name") or data.get("task_id") or "").split("__")[0]
+        if task not in task_results:
+            continue
+
+        exception_info = data.get("exception_info")
+        reward = ((data.get("verifier_result") or {}).get("rewards") or {}).get("reward")
+        if exception_info or reward is not None:
+            task_results[task].append((path.stat().st_mtime, str(path), float(reward or 0.0)))
+
+    capped_rewards: list[float] = []
+    for task in TB20_TASKS:
+        results = sorted(task_results[task])[:5]
+        capped_rewards.extend(reward for _, _, reward in results)
+
+    if len(capped_rewards) != EXPECTED_EVAL_ATTEMPTS:
+        return None
+    return 100.0 * sum(capped_rewards) / len(capped_rewards)
 
 
 def write_csv(rows: list[dict[str, float | int | str]]) -> None:
@@ -67,13 +126,29 @@ def write_csv(rows: list[dict[str, float | int | str]]) -> None:
                 "step",
                 "elapsed_hours",
                 "train_reward_avg",
-                "eval_subset_reward",
-                "eval_subset_score",
+                "eval_tb20_score",
             ],
             lineterminator="\n",
         )
         writer.writeheader()
-        writer.writerows(rows)
+        eval_scores = {
+            step: read_external_tb20_score(eval_root)
+            for step, eval_root in EVAL_POINTS.items()
+        }
+        writer.writerow(
+            {
+                "step": 0,
+                "elapsed_hours": 0.0,
+                "train_reward_avg": "",
+                "eval_tb20_score": SFT_BASELINE_SCORE,
+            }
+        )
+        for row in rows:
+            eval_score = ""
+            score = eval_scores.get(int(row["step"]))
+            if score is not None:
+                eval_score = score
+            writer.writerow({**row, "eval_tb20_score": eval_score})
 
 
 def read_csv() -> list[dict[str, float | int | str]]:
@@ -84,9 +159,10 @@ def read_csv() -> list[dict[str, float | int | str]]:
                 {
                     "step": int(row["step"]),
                     "elapsed_hours": float(row["elapsed_hours"]),
-                    "train_reward_avg": float(row["train_reward_avg"]),
-                    "eval_subset_reward": row["eval_subset_reward"],
-                    "eval_subset_score": row["eval_subset_score"],
+                    "train_reward_avg": (
+                        "" if row["train_reward_avg"] == "" else float(row["train_reward_avg"])
+                    ),
+                    "eval_tb20_score": row["eval_tb20_score"],
                 }
             )
         return rows
@@ -94,17 +170,19 @@ def read_csv() -> list[dict[str, float | int | str]]:
 
 def main() -> None:
     if METRICS_PATH.exists():
-        rows = read_metrics_jsonl()
-        write_csv(rows)
+        metric_rows = read_metrics_jsonl()
+        write_csv(metric_rows)
+        rows = read_csv()
     else:
         rows = read_csv()
 
-    xs = [float(row["elapsed_hours"]) for row in rows]
-    train_rewards = [float(row["train_reward_avg"]) for row in rows]
+    train_rows = [row for row in rows if row["train_reward_avg"] != ""]
+    xs = [float(row["elapsed_hours"]) for row in train_rows]
+    train_rewards = [float(row["train_reward_avg"]) for row in train_rows]
     train_ma = moving_average(train_rewards)
-    eval_rows = [row for row in rows if row["eval_subset_score"] != ""]
+    eval_rows = [row for row in rows if row["eval_tb20_score"] != ""]
     eval_xs = [float(row["elapsed_hours"]) for row in eval_rows]
-    eval_scores = [float(row["eval_subset_score"]) for row in eval_rows]
+    eval_scores = [float(row["eval_tb20_score"]) for row in eval_rows]
 
     plt.rcParams.update(
         {
@@ -143,9 +221,9 @@ def main() -> None:
         train_ma,
         color="#065f46",
         linewidth=2.4,
-        label="5-step moving average",
+        label="10-step moving average",
     )
-    ax_train.set_title("Default GRPO Reward and TB Subset Eval vs Time", fontsize=16, pad=14)
+    ax_train.set_title("Default GRPO Reward and TB20 Eval vs Time", fontsize=16, pad=14)
     ax_train.set_ylabel("Train reward", fontsize=12)
     ax_train.set_ylim(0, max(train_rewards) * 1.18)
     ax_train.grid(True, which="major", color="#d1d5db", linewidth=0.8, alpha=0.75)
@@ -160,11 +238,11 @@ def main() -> None:
         marker="s",
         markersize=6.0,
         linewidth=2.2,
-        label="TB subset eval score",
+        label="External TB20 eval score",
     )
     for row, score in zip(eval_rows, eval_scores):
         ax_eval.annotate(
-            f"s{row['step']}",
+            "SFT" if int(row["step"]) == 0 else f"s{row['step']}",
             (float(row["elapsed_hours"]), score),
             xytext=(0, 7),
             textcoords="offset points",
@@ -183,8 +261,8 @@ def main() -> None:
     ax_eval.text(
         0.01,
         -0.33,
-        "Recipe: b8 prompts x 8 rollouts, no KL, trajectory rewards. "
-        "Eval score is eval-rollout/reward x 100 on the held-out easy subset.",
+        "Recipe: b12 prompts x 4 rollouts, individual-turn exports, interleaved grouped rollouts, "
+        "group mean-only reward normalization. Eval is 20 Terminal-Bench tasks x 5 attempts.",
         transform=ax_eval.transAxes,
         fontsize=9,
         color="#4b5563",
