@@ -35,10 +35,14 @@ export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
 LOG_DIR="${LOG_DIR:-/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/terminal_bench_eval/server_logs}"
 mkdir -p "$LOG_DIR"
 
-VLLM_HELP="$("$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server --help 2>/dev/null || true)"
 DEFAULT_TOOL_CALL_PARSER="qwen3"
-if grep -q "qwen3_xml" <<<"$VLLM_HELP"; then
-  DEFAULT_TOOL_CALL_PARSER="qwen3_xml"
+if [[ "${PROBE_VLLM_ARGS:-1}" == "1" ]]; then
+  VLLM_HELP="$("$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server --help 2>/dev/null || true)"
+  if grep -q "qwen3_xml" <<<"$VLLM_HELP"; then
+    DEFAULT_TOOL_CALL_PARSER="qwen3_xml"
+  fi
+else
+  VLLM_HELP=""
 fi
 
 VLLM_ARGS=(
@@ -56,10 +60,12 @@ VLLM_ARGS=(
 )
 
 if [[ "${ENABLE_REASONING:-1}" == "1" ]]; then
-  if grep -q -- "--enable-reasoning" <<<"$VLLM_HELP"; then
+  if [[ "${FORCE_ENABLE_REASONING:-0}" == "1" ]] || grep -q -- "--enable-reasoning" <<<"$VLLM_HELP"; then
     VLLM_ARGS+=(--enable-reasoning)
   fi
-  VLLM_ARGS+=(--reasoning-parser "${REASONING_PARSER:-qwen3}")
+  if [[ "${PROBE_VLLM_ARGS:-1}" != "1" ]] || grep -q -- "--reasoning-parser" <<<"$VLLM_HELP"; then
+    VLLM_ARGS+=(--reasoning-parser "${REASONING_PARSER:-qwen3}")
+  fi
 fi
 
 cd "$REPO_ROOT"

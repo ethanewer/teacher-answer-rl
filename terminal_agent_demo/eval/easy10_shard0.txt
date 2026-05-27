@@ -1,0 +1,3 @@
+modernize-scientific-stack
+log-summary-date-ranges
+multi-source-data-merger

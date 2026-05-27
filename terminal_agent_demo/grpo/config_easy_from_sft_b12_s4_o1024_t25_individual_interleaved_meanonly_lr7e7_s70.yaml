@@ -1,17 +1,17 @@
-experiment_name: grpo-easy-from-sft-b12-s4-o1024-t25-individual-interleaved-meanonly-lr7e7-s40
+experiment_name: grpo-easy-from-sft-b12-s4-o1024-t25-individual-interleaved-meanonly-lr7e7-s70
 trial_name: trial0
 
 seed: 7
 enable_offload: false
 total_train_epochs: 1
-total_train_steps: 40
+total_train_steps: 70
 tokenizer_path: ${actor.path}
 
-# Default GRPO recipe for the easy-task setting. This keeps the b12/s4
-# individual-turn signal shape from the GRPO family that beat SFT in full
-# Terminal-Bench eval, with GroupedRolloutWorkflow interleaving sampled rollouts
-# by turn index before reward normalization. Reward normalization is group
-# mean-only: sparse turn rewards are centered against same-prompt samples
+# Default/best GRPO recipe family for the easy-task setting. This keeps the
+# b12/s4 individual-turn signal shape from the GRPO family that beat SFT in
+# full Terminal-Bench eval, with GroupedRolloutWorkflow interleaving sampled
+# rollouts by turn index before reward normalization. Reward normalization is
+# group mean-only: sparse turn rewards are centered against same-prompt samples
 # without dividing by a near-zero group standard deviation.
 n_trajs: 1
 max_turns: 25
