@@ -183,16 +183,12 @@ AReaL/terminal_agent_demo/additional-results.md
 Training-time figures are committed under `figures/`:
 
 ```text
-figures/tb_perf_vs_rl_training_time.{png,svg,pdf}
-figures/grpo_task_reward_vs_training_step.{png,svg,pdf}
 figures/default_grpo_train_eval_vs_time.{png,svg,pdf}
 ```
 
-Regenerate them with:
+Regenerate it with:
 
 ```bash
-AReaL/.venv/bin/python figures/plot_tb_perf_vs_rl_time.py
-AReaL/.venv/bin/python figures/plot_grpo_reward_vs_step.py
 AReaL/.venv/bin/python figures/plot_default_grpo_train_eval_vs_time.py
 ```
 
