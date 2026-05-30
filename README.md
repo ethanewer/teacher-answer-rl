@@ -227,9 +227,17 @@ GRPO recipe: clipped group-standardized rewards for the first 20 continuation
 updates, group mean-only centering afterwards, recomputed decoupled log-probs,
 token-ratio masking, asymmetric PPO clipping, a 16k packed-row budget, and a
 0.05 KL penalty to the SFT reference. The final checkpoint kept stable rollout
-behavior through 120 continuation updates, and the 20-task, 5-attempt
-Terminal-Bench validation scored 19/100 versus 14/100 for the previous
-mean-only long-run recipe. The validation shards are:
+behavior through 120 continuation updates. On the same 20-task, one-attempt
+Terminal-Bench screen, the checkpoint scores improve over time:
+
+```text
+step 39:  3/20  ta-gal-stop-s39-full20-a1-o4096-r7-curve1
+step 79:  4/20  ta-gal-stop-s79-full20-a1-o4096-r7-curve1
+step 119: 7/20  ta-gal-stop-s119-full20-a1-o4096-r7
+```
+
+The 20-task, 5-attempt Terminal-Bench validation scored 19/100 versus 14/100 for
+the previous mean-only long-run recipe. The validation shards are:
 
 ```text
 ta-gal-stop-s119-full20-a5-o4096-r7d-s0
