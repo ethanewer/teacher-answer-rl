@@ -80,7 +80,25 @@ def main(args: list[str]) -> None:
             generic_stop_strings=train_dataset_kwargs.get(
                 "generic_stop_strings",
                 os.environ.get("TA_RL_GENERIC_STOP_STRINGS"),
-            )
+            ),
+            generic_stop_reward_weight=float(
+                train_dataset_kwargs.get(
+                    "generic_stop_reward_weight",
+                    os.environ.get("TA_RL_GENERIC_STOP_REWARD_WEIGHT", 0.0),
+                )
+            ),
+            generic_length_stop_penalty_weight=float(
+                train_dataset_kwargs.get(
+                    "generic_length_stop_penalty_weight",
+                    os.environ.get("TA_RL_GENERIC_LENGTH_STOP_PENALTY_WEIGHT", 0.0),
+                )
+            ),
+            generic_prefix_length_penalty_weight=float(
+                train_dataset_kwargs.get(
+                    "generic_prefix_length_penalty_weight",
+                    os.environ.get("TA_RL_GENERIC_PREFIX_LENGTH_PENALTY_WEIGHT", 0.0),
+                )
+            ),
         )
     if workflow_mode in {"full_turn", "full-turn", "full"}:
         workflow_path = (

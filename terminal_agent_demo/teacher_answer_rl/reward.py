@@ -59,6 +59,7 @@ def _normalize_teacher_rows(
     has_answer_rows: list[torch.Tensor],
     *,
     group_size: int,
+    scale_by_std: bool,
 ) -> list[torch.Tensor]:
     if group_size <= 0:
         raise ValueError(f"teacher reward norm group_size must be positive, got {group_size}")
@@ -79,7 +80,10 @@ def _normalize_teacher_rows(
             normalized = torch.zeros_like(vals)
         else:
             centered = vals - vals.mean()
-            normalized = centered / vals.std(unbiased=False).clamp(min=1e-6)
+            if scale_by_std:
+                normalized = centered / vals.std(unbiased=False).clamp(min=1e-6)
+            else:
+                normalized = centered
         normalized_chunks.append(normalized)
     if not normalized_chunks:
         return [row.detach().float().cpu() for row in reward_rows]
@@ -87,6 +91,146 @@ def _normalize_teacher_rows(
     for (rewards, row_idx), value in zip(refs, normalized_values):
         rewards[row_idx] = value.to(rewards.device)
     return [row.detach().float().cpu() for row in reward_rows]
+
+
+def _teacher_reward_norm_scale_by_std(
+    mode: str,
+    *,
+    global_step: int = 0,
+    switch_step: int | None = None,
+) -> bool | None:
+    mode = mode.lower().replace("-", "_")
+    if mode in {"", "none", "null", "false"}:
+        return None
+    if mode in {"group", "grpo", "group_std", "group_stddev"}:
+        return True
+    if mode in {
+        "group_mean",
+        "group_mean_only",
+        "group_meanonly",
+        "mean_only",
+        "meanonly",
+        "grpo_mean",
+        "grpo_mean_only",
+        "grpo_meanonly",
+    }:
+        return False
+    if mode in {
+        "group_then_mean",
+        "group_then_mean_only",
+        "group_then_meanonly",
+        "group_to_mean",
+        "group_to_mean_only",
+        "group_to_meanonly",
+        "group_std_then_mean",
+        "group_std_then_mean_only",
+        "group_std_then_meanonly",
+    }:
+        if switch_step is None:
+            switch_step = _env_int("TEACHER_ANSWER_REWARD_NORM_SWITCH_STEP", 40)
+        return global_step < switch_step
+    raise ValueError(f"unsupported teacher_answer_reward_norm: {mode}")
+
+
+def _teacher_reward_norm_is_scheduled(mode: str) -> bool:
+    return mode.lower().replace("-", "_") in {
+        "group_then_mean",
+        "group_then_mean_only",
+        "group_then_meanonly",
+        "group_to_mean",
+        "group_to_mean_only",
+        "group_to_meanonly",
+        "group_std_then_mean",
+        "group_std_then_mean_only",
+        "group_std_then_meanonly",
+    }
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return int(value)
+
+
+def _apply_teacher_reward_norm(
+    trainer,
+    reward_rows: list[torch.Tensor],
+    has_answer_rows: list[torch.Tensor],
+    *,
+    global_step: int,
+) -> list[torch.Tensor] | None:
+    reward_norm_mode = str(_config_value(trainer, "teacher_answer_reward_norm", ""))
+    switch_step = None
+    if _teacher_reward_norm_is_scheduled(reward_norm_mode):
+        switch_step = int(
+            _config_value(
+                trainer,
+                "teacher_answer_reward_norm_switch_step",
+                _env_int("TEACHER_ANSWER_REWARD_NORM_SWITCH_STEP", 40),
+            )
+        )
+    scale_by_std = _teacher_reward_norm_scale_by_std(
+        reward_norm_mode,
+        global_step=global_step,
+        switch_step=switch_step,
+    )
+    if scale_by_std is None:
+        return None
+    group_size = int(
+        _config_value(
+            trainer,
+            "teacher_answer_reward_norm_group_size",
+            getattr(trainer.config.gconfig, "n_samples", 1),
+        )
+    )
+    return _normalize_teacher_rows(
+        reward_rows,
+        has_answer_rows,
+        group_size=group_size,
+        scale_by_std=scale_by_std,
+    )
+
+
+def _teacher_reward_clip_value(trainer) -> float | None:
+    value = _config_value(
+        trainer,
+        "teacher_answer_reward_norm_clip",
+        _config_value(
+            trainer,
+            "teacher_answer_reward_clip",
+            os.environ.get("TEACHER_ANSWER_REWARD_NORM_CLIP"),
+        ),
+    )
+    if value is None or str(value).strip() == "":
+        return None
+    value = float(value)
+    return value if value > 0.0 else None
+
+
+def _apply_teacher_reward_clip(
+    trainer,
+    reward_rows: list[torch.Tensor],
+    has_answer_rows: list[torch.Tensor],
+) -> tuple[list[torch.Tensor], list[torch.Tensor], float] | None:
+    clip_value = _teacher_reward_clip_value(trainer)
+    if clip_value is None:
+        return None
+    clipped_flags: list[torch.Tensor] = []
+    for rewards, has_answer in zip(reward_rows, has_answer_rows):
+        mask = has_answer.to(device=rewards.device, dtype=torch.bool)
+        flags = torch.zeros_like(rewards, dtype=torch.float32)
+        if mask.any():
+            original = rewards[mask]
+            clipped = original.clamp(min=-clip_value, max=clip_value)
+            rewards[mask] = clipped
+            flags[mask] = (clipped != original).float()
+        clipped_flags.append(flags.detach().float().cpu())
+    return (
+        [row.detach().float().cpu() for row in reward_rows],
+        clipped_flags,
+        clip_value,
+    )
 
 
 def _build_scoring_batch(
@@ -204,7 +348,6 @@ def teacher_answer_reward_postprocess(
     global_step: int,
 ) -> None:
     """Replace placeholder rewards with teacher-answer continuation likelihood."""
-    del global_step
     format_bonus = float(
         _config_value(
             trainer,
@@ -255,23 +398,21 @@ def teacher_answer_reward_postprocess(
             all_optimized_lengths.append(loss_mask.sum(dim=-1).detach().cpu())
             all_lengths.append(answer_score_mask.float().sum(dim=-1).detach().cpu())
 
-        reward_norm_mode = str(_config_value(trainer, "teacher_answer_reward_norm", "")).lower()
-        normalized_reward_rows: list[torch.Tensor] | None = None
-        if reward_norm_mode in {"group", "grpo"}:
-            group_size = int(
-                _config_value(
-                    trainer,
-                    "teacher_answer_reward_norm_group_size",
-                    getattr(trainer.config.gconfig, "n_samples", 1),
-                )
-            )
-            normalized_reward_rows = _normalize_teacher_rows(
-                traj_reward_rows,
-                traj_has_answer_rows,
-                group_size=group_size,
-            )
-        elif reward_norm_mode not in {"", "none", "null", "false"}:
-            raise ValueError(f"unsupported teacher_answer_reward_norm: {reward_norm_mode}")
+        normalized_reward_rows = _apply_teacher_reward_norm(
+            trainer,
+            traj_reward_rows,
+            traj_has_answer_rows,
+            global_step=global_step,
+        )
+        clipped_reward_rows = _apply_teacher_reward_clip(
+            trainer,
+            traj_reward_rows,
+            traj_has_answer_rows,
+        )
+        clipped_flags = None
+        clip_value = None
+        if clipped_reward_rows is not None:
+            normalized_reward_rows, clipped_flags, clip_value = clipped_reward_rows
 
         rewards_cat = torch.cat(all_adjusted_rewards)
         stats_tracker.denominator(
@@ -293,6 +434,12 @@ def teacher_answer_reward_postprocess(
         )
         if normalized_reward_rows is not None:
             stat_kwargs["teacher_answer_reward_normed"] = torch.cat(normalized_reward_rows)
+        if clipped_flags is not None and clip_value is not None:
+            stat_kwargs["teacher_answer_reward_clipped"] = torch.cat(clipped_flags)
+            stat_kwargs["teacher_answer_reward_clip"] = torch.full_like(
+                rewards_cat,
+                float(clip_value),
+            )
         stats_tracker.stat(**stat_kwargs, denominator="teacher_answer_n_seqs")
         return
 
@@ -369,23 +516,21 @@ def teacher_answer_reward_postprocess(
         )
         all_scoring_truncated.append(scoring_stat["truncated"].detach().float().cpu())
 
-    reward_norm_mode = str(_config_value(trainer, "teacher_answer_reward_norm", "")).lower()
-    normalized_reward_rows: list[torch.Tensor] | None = None
-    if reward_norm_mode in {"group", "grpo"}:
-        group_size = int(
-            _config_value(
-                trainer,
-                "teacher_answer_reward_norm_group_size",
-                getattr(trainer.config.gconfig, "n_samples", 1),
-            )
-        )
-        normalized_reward_rows = _normalize_teacher_rows(
-            traj_reward_rows,
-            traj_has_answer_rows,
-            group_size=group_size,
-        )
-    elif reward_norm_mode not in {"", "none", "null", "false"}:
-        raise ValueError(f"unsupported teacher_answer_reward_norm: {reward_norm_mode}")
+    normalized_reward_rows = _apply_teacher_reward_norm(
+        trainer,
+        traj_reward_rows,
+        traj_has_answer_rows,
+        global_step=global_step,
+    )
+    clipped_reward_rows = _apply_teacher_reward_clip(
+        trainer,
+        traj_reward_rows,
+        traj_has_answer_rows,
+    )
+    clipped_flags = None
+    clip_value = None
+    if clipped_reward_rows is not None:
+        normalized_reward_rows, clipped_flags, clip_value = clipped_reward_rows
 
     rewards_cat = torch.cat(all_rewards)
     stats_tracker.denominator(
@@ -410,4 +555,10 @@ def teacher_answer_reward_postprocess(
     )
     if normalized_reward_rows is not None:
         stat_kwargs["teacher_answer_reward_normed"] = torch.cat(normalized_reward_rows)
+    if clipped_flags is not None and clip_value is not None:
+        stat_kwargs["teacher_answer_reward_clipped"] = torch.cat(clipped_flags)
+        stat_kwargs["teacher_answer_reward_clip"] = torch.full_like(
+            rewards_cat,
+            float(clip_value),
+        )
     stats_tracker.stat(**stat_kwargs, denominator="teacher_answer_n_seqs")

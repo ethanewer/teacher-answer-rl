@@ -84,6 +84,14 @@ def _tool_call_end_token_len(tokenizer, output_text: str, output_len: int) -> in
     return min(len(tokenizer.encode(output_text[:end], add_special_tokens=False)), output_len)
 
 
+def _ends_with_eos_or_pad(tokenizer, tokens: list[int]) -> bool:
+    if not tokens:
+        return False
+    stop_ids = {tokenizer.eos_token_id, tokenizer.pad_token_id}
+    stop_ids.discard(None)
+    return tokens[-1] in stop_ids
+
+
 def _parse_generated_tool_call(output_text: str) -> bool:
     return _parse_tool_call_payload(output_text) is not None
 
@@ -272,6 +280,38 @@ def _teacher_answer_score_mask(
     return [0] * start + [1] * (len(answer_ids) - start)
 
 
+def _generic_teacher_answer_score_mask(
+    tokenizer,
+    teacher_answer: str,
+    answer_ids: list[int],
+    score_mode: str,
+) -> list[int]:
+    mode = score_mode.strip().lower().replace("-", "_")
+    if mode in {"", "all", "full"}:
+        return [1] * len(answer_ids)
+    if mode not in {
+        "arguments",
+        "arguments_onward",
+        "tool_arguments",
+        "tool_arguments_onward",
+        "action_payload",
+        "payload",
+    }:
+        raise ValueError(f"unsupported generic teacher_answer_score_mode: {score_mode}")
+
+    key_starts = [
+        teacher_answer.find(pattern)
+        for pattern in ('"arguments"', "'arguments'")
+        if teacher_answer.find(pattern) >= 0
+    ]
+    if not key_starts:
+        return [1] * len(answer_ids)
+    start = min(key_starts)
+    prefix_len = len(_tokenize_text(tokenizer, teacher_answer[:start]))
+    prefix_len = max(0, min(prefix_len, len(answer_ids)))
+    return [0] * prefix_len + [1] * (len(answer_ids) - prefix_len)
+
+
 def _optional_tools(data: dict[str, Any]) -> list[dict[str, Any]] | None:
     tools = data.get("tools")
     return tools if isinstance(tools, list) and tools else None
@@ -293,6 +333,9 @@ class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
         enable_thinking: bool = True,
         teacher_answer_score_mode: str = "all",
         generic_stop_strings: list[str] | tuple[str, ...] | str | None = None,
+        generic_stop_reward_weight: float = 0.0,
+        generic_length_stop_penalty_weight: float = 0.0,
+        generic_prefix_length_penalty_weight: float = 0.0,
     ):
         self.tokenizer = tokenizer
         if isinstance(self.tokenizer, str):
@@ -314,6 +357,13 @@ class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
         )
         self.enable_thinking = enable_thinking
         self.teacher_answer_score_mode = teacher_answer_score_mode
+        self.generic_stop_reward_weight = float(generic_stop_reward_weight)
+        self.generic_length_stop_penalty_weight = float(
+            generic_length_stop_penalty_weight
+        )
+        self.generic_prefix_length_penalty_weight = float(
+            generic_prefix_length_penalty_weight
+        )
 
     def _input_ids(self, data: dict[str, Any]) -> list[int]:
         kwargs: dict[str, Any] = dict(
@@ -334,14 +384,12 @@ class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
     ) -> tuple[list[int], list[int], list[int], list[int], list[int], list[int]]:
         teacher_answer = str(data["teacher_answer"]).rstrip()
         answer_ids = _tokenize_text(self.tokenizer, teacher_answer)
-        score_mode = self.teacher_answer_score_mode.strip().lower().replace("-", "_")
-        if score_mode in {"", "all", "full"}:
-            score_ids = [1] * len(answer_ids)
-        else:
-            raise ValueError(
-                "GenericToolActionLikelihoodWorkflow only supports "
-                f"teacher_answer_score_mode=all/full, got {self.teacher_answer_score_mode!r}"
-            )
+        score_ids = _generic_teacher_answer_score_mask(
+            self.tokenizer,
+            teacher_answer,
+            answer_ids,
+            self.teacher_answer_score_mode,
+        )
         prefix_values, prefix_mask = _metadata_vector([], seq_len)
         answer_values, answer_mask = _metadata_vector(answer_ids, seq_len)
         score_values, _ = _metadata_vector(score_ids, seq_len)
@@ -376,6 +424,20 @@ class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
         versions = [-1] * resp.input_len + resp.output_versions
         loss_mask = [0] * resp.input_len + [1] * resp.output_len
         context_len = resp.input_len + resp.output_len
+        max_new_tokens = max(float(getattr(self.gconfig, "max_new_tokens", 1) or 1), 1.0)
+        stop_boundary_found = (
+            resp.stop_reason == "stop"
+            and not _ends_with_eos_or_pad(self.tokenizer, resp.output_tokens)
+        )
+        length_stopped = resp.stop_reason == "length"
+        prefix_length_penalty = self.generic_prefix_length_penalty_weight * (
+            float(resp.output_len) / max_new_tokens
+        )
+        stop_reward = (
+            self.generic_stop_reward_weight * float(stop_boundary_found)
+            - self.generic_length_stop_penalty_weight * float(length_stopped)
+            - prefix_length_penalty
+        )
 
         (
             prefix_values,
@@ -386,7 +448,19 @@ class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
             context_mask,
         ) = self._teacher_answer_metadata(len(seq), data, context_len=context_len)
 
-        stats_tracker.get(workflow_context.stat_scope()).scalar(reward=0.0)
+        stats_tracker.get(workflow_context.stat_scope()).scalar(reward=float(stop_reward))
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            generic_stop_boundary_found=float(stop_boundary_found)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            generic_length_stopped=float(length_stopped)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            generic_prefix_len=float(resp.output_len)
+        )
+        stats_tracker.get(workflow_context.stat_scope()).scalar(
+            generic_prefix_length_penalty=float(prefix_length_penalty)
+        )
 
         res = {
             "input_ids": torch.tensor(seq, dtype=torch.int32),
@@ -394,7 +468,7 @@ class GenericToolActionLikelihoodWorkflow(RolloutWorkflow):
             "logprobs": torch.tensor(logprobs, dtype=torch.float32),
             "versions": torch.tensor(versions, dtype=torch.int32),
             "attention_mask": torch.ones(len(seq), dtype=torch.bool),
-            "rewards": torch.tensor(0.0, dtype=torch.float32),
+            "rewards": torch.tensor(stop_reward, dtype=torch.float32),
             "teacher_answer_prefix_ids": torch.tensor(prefix_values, dtype=torch.int32),
             "teacher_answer_prefix_mask": torch.tensor(prefix_mask, dtype=torch.bool),
             "teacher_answer_ids": torch.tensor(answer_values, dtype=torch.int32),
