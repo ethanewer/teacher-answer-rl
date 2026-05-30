@@ -202,19 +202,43 @@ This is an RL-only, hand-crafted turn-reward command-presence/completion recipe.
 It is terminal-harness-specific: it scores similarity between the student's
 generated `execute_commands` action and the corpus teacher action.
 
-A confirmed domain-general teacher-answer recipe is:
+The default domain-general teacher-answer recipe is:
 
 ```text
-AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix_short_n4.yaml
+AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix_short_n4_cont_gs39_stopreg_gclip075_mean_kl05_row16k_ratiomask_asymclip_lr2e8_s120.yaml
 ```
 
 This recipe follows the likelihood-reward direction studied in
 `https://arxiv.org/abs/2602.03979`: for each tool-loop state it samples the
 student's prefix before the next serialized tool call, then rewards that prefix
 by the average log-probability of the corpus teacher's next tool-call block. The
-matched recipe uses 4 samples per prompt, 512 max sampled prefix tokens, group
-reward normalization across samples, and a YAML-configured output-length
-penalty. It uses only the message history, tool schema, sampled prefix, and
+default is a two-stage run. Stage 1 is the validated short recipe
+`config_general_action_likelihood_prefix_short_n4.yaml` through global step 39.
+Stage 2 starts from that checkpoint and continues for 120 more updates, ending
+at continuation step 119. It keeps the same likelihood-based, domain-general
+teacher-continuation reward, and adds only domain-general regularization:
+a stop-boundary bonus for prefixes that reach the configured tool-call boundary,
+a length-stop penalty for prefixes that exhaust the rollout budget, and a small
+prefix-length penalty. This prevents the longer run from spending the whole
+rollout on pre-action text.
+
+The continuation also uses the stabilization choices that held up in the default
+GRPO recipe: clipped group-standardized rewards for the first 20 continuation
+updates, group mean-only centering afterwards, recomputed decoupled log-probs,
+token-ratio masking, asymmetric PPO clipping, a 16k packed-row budget, and a
+0.05 KL penalty to the SFT reference. The final checkpoint kept stable rollout
+behavior through 120 continuation updates, and the 20-task, 5-attempt
+Terminal-Bench validation scored 19/100 versus 14/100 for the previous
+mean-only long-run recipe. The validation shards are:
+
+```text
+ta-gal-stop-s119-full20-a5-o4096-r7d-s0
+ta-gal-stop-s119-full20-a5-o4096-r7d-s1
+ta-gal-stop-s119-full20-a5-o4096-r7d-s2
+ta-gal-stop-s119-full20-a5-o4096-r7d-s3
+```
+
+The recipe uses only the message history, tool schema, sampled prefix, and
 teacher continuation, so it is intended to apply to any tool-calling agent
 domain with reference trajectories. It does not parse terminal commands or use
 terminal-specific action-similarity rewards.
