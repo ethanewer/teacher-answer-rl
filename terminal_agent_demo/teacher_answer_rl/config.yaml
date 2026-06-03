@@ -1,4 +1,4 @@
-experiment_name: ta-cmdpresence-rlonly-gs39-strongcomplete-local-s40
+experiment_name: ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40
 trial_name: trial0
 
 seed: 7
@@ -35,30 +35,30 @@ rollout:
   setup_timeout: 1200
 
 gconfig:
-  n_samples: 2
-  min_new_tokens: 0
-  max_new_tokens: 1024
+  n_samples: 4
+  min_new_tokens: 1
+  max_new_tokens: 512
   max_tokens: 20480
   greedy: false
-  temperature: 0.6
-  top_p: 0.95
+  temperature: 0.65
+  top_p: 0.9
   top_k: 20
 
 eval_gconfig:
   n_samples: 1
-  min_new_tokens: 0
-  max_new_tokens: 1024
+  min_new_tokens: 1
+  max_new_tokens: 512
   max_tokens: 20480
   greedy: false
-  temperature: 0.6
-  top_p: 0.95
+  temperature: 0.65
+  top_p: 0.9
   top_k: 20
 
 actor:
   backend: "megatron:d4p1t1"
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-cmdpresence-toolcall-cont-s40/trial0/default/epoch0epochstep39globalstep39
+  path: /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/qwen3-4b-thinking-terminus-tool-sft-medium-even-trajectory32768-b32-tok576k-h200/trial0/default/epoch0epochstep1384globalstep1384
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
@@ -142,21 +142,6 @@ ref:
     target: actor
   scheduling_spec: ${actor.scheduling_spec}
 
-sglang:
-  model_path: ${actor.path}
-  python_executable: ${oc.env:AREAL_SGLANG_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-sglang/bin/python}
-  random_seed: ${seed}
-  skip_tokenizer_init: false
-  dtype: ${actor.dtype}
-  max_running_requests: 256
-  context_length: 20480
-  mem_fraction_static: 0.70
-  attention_backend: flashinfer
-  log_level: warning
-  log_level_http: warning
-  chunked_prefill_size: -1
-  max_prefill_tokens: 20480
-
 vllm:
   model: ${actor.path}
   python_executable: ${oc.env:AREAL_VLLM_PYTHON,/wbl-fast/usrs/ee/teacher-answer-rl/AReaL/.venv-rollout-vllm/bin/python}
@@ -186,35 +171,16 @@ train_dataset:
     shuffle_source_groups: true
     enable_thinking: true
     lazy_tokenize: true
-    workflow_mode: full_turn
+    workflow_mode: generic_likelihood_prefix
+    generic_stop_strings:
+      - "<tool_call>"
     teacher_answer_start: tool_call
     teacher_answer_scorer: ref
-    teacher_answer_score_mode: commands
-    teacher_answer_logp_reward_weight: 0.0
-    teacher_loss_span: tool_call
-    syntax_reward_on_teacher_row: true
-    supervise_teacher_answer: false
-    teacher_answer_supervised_weight: 0.0
-    teacher_answer_supervised_score_mode: all
-    teacher_answer_supervised_max_prefix_tokens: 128
+    teacher_answer_score_mode: all
+    teacher_answer_logp_reward_weight: 1.0
+    teacher_answer_length_penalty: 0.16
     teacher_answer_reward_norm: group
     teacher_answer_reward_norm_group_size: ${gconfig.n_samples}
-    teacher_command_match_reward_weight: 1.5
-    teacher_command_presence_reward_weight: 0.4
-    teacher_command_newline_reward_weight: 0.05
-    teacher_completion_match_reward_weight: 2.0
-    teacher_empty_completion_reward_weight: 0.5
-    teacher_command_count_reward_weight: 0.2
-    teacher_repeated_command_penalty_weight: 1.0
-    teacher_reward_requires_valid_syntax: false
-    drop_invalid_teacher_row_loss: false
-    syntax_reward_weight: 1.0
-    valid_syntax_reward: 0.5
-    invalid_syntax_reward: -1.0
-    syntax_thinking_length_penalty_weight: 0.0
-    syntax_output_length_penalty_weight: 0.12
-    emit_syntax_view: true
-    emit_valid_syntax_view: false
 
 valid_dataset: null
 
@@ -250,3 +216,9 @@ stats_logger:
   fileroot: ${cluster.fileroot}
   wandb:
     mode: disabled
+
+perf_tracer:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  enabled: false

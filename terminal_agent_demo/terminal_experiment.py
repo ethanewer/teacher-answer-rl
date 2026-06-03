@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +27,13 @@ TERMINAL_BENCH_EASY10_TASKS = [
     "sqlite-db-truncate",
 ]
 TERMINAL_BENCH_FULL_SUITE_TASK_COUNT = 89
+TERMINUS_AGENT_ENV_KEYS = (
+    "TERMINUS_TOOL_ENABLE_TASK_REMINDERS",
+    "TERMINUS_TOOL_TASK_REMINDER_ALLOWLIST",
+    "TERMINUS_TOOL_ENABLE_NO_TOOL_REPAIR",
+    "TERMINUS_TOOL_REPAIR_MAX_TOKENS",
+    "TERMINUS_TOOL_DISABLE_OPENAI_TOOLS",
+)
 
 
 def _model_info(max_input_tokens: int, max_output_tokens: int) -> dict[str, Any]:
@@ -39,6 +47,11 @@ def _model_info(max_input_tokens: int, max_output_tokens: int) -> dict[str, Any]
 
 def _cmd_write_harbor_eval_config(args: argparse.Namespace) -> None:
     task_names = args.task or TERMINAL_BENCH_EASY10_TASKS
+    terminus_env = {
+        key: os.environ[key]
+        for key in TERMINUS_AGENT_ENV_KEYS
+        if key in os.environ
+    }
     config = {
         "job_name": args.job_name,
         "jobs_dir": str(args.jobs_dir),
@@ -66,6 +79,7 @@ def _cmd_write_harbor_eval_config(args: argparse.Namespace) -> None:
                     "record_terminal_session": args.record_terminal_session,
                     "model_info": _model_info(args.max_input_tokens, args.max_output_tokens),
                     "llm_kwargs": args.llm_kwargs,
+                    "terminus_env": terminus_env,
                 },
             }
         ],

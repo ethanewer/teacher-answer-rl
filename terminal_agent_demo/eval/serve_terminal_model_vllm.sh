@@ -55,9 +55,14 @@ VLLM_ARGS=(
   --dtype "${DTYPE:-bfloat16}"
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.86}"
   --uvicorn-log-level "${UVICORN_LOG_LEVEL:-warning}"
-  --enable-auto-tool-choice
-  --tool-call-parser "${TOOL_CALL_PARSER:-$DEFAULT_TOOL_CALL_PARSER}"
 )
+
+if [[ "${ENABLE_AUTO_TOOL_CHOICE:-1}" == "1" ]]; then
+  VLLM_ARGS+=(
+    --enable-auto-tool-choice
+    --tool-call-parser "${TOOL_CALL_PARSER:-$DEFAULT_TOOL_CALL_PARSER}"
+  )
+fi
 
 if [[ "${ENABLE_REASONING:-1}" == "1" ]]; then
   if [[ "${FORCE_ENABLE_REASONING:-0}" == "1" ]] || grep -q -- "--enable-reasoning" <<<"$VLLM_HELP"; then

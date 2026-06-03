@@ -78,6 +78,10 @@ until curl -fsS "$API_BASE/models" >/dev/null 2>&1; do
 done
 
 echo "Server ready; running task-file eval: task_file=$TASK_FILE attempts=$ATTEMPTS concurrency=$CONCURRENCY max_output=$MAX_OUTPUT_TOKENS"
+HARBOR_EXTRA_CONFIG_ARGS=()
+if [[ -n "${HARBOR_EXTRA_CONFIG_ARGS_STR:-}" ]]; then
+  read -r -a HARBOR_EXTRA_CONFIG_ARGS <<<"$HARBOR_EXTRA_CONFIG_ARGS_STR"
+fi
 DOCKER_WAIT_SECONDS="${DOCKER_WAIT_SECONDS:-300}" \
 bash terminal_agent_demo/eval/run_terminal_bench_eval_harbor.sh \
   "$JOB_NAME" "$MODEL_NAME" "$API_BASE" "$JOBS_DIR" \
@@ -89,7 +93,8 @@ bash terminal_agent_demo/eval/run_terminal_bench_eval_harbor.sh \
   --max-output-tokens "$MAX_OUTPUT_TOKENS" \
   --temperature "${TEMPERATURE:-0.2}" \
   --top-p "${TOP_P:-0.8}" \
-  --top-k "${TOP_K:-20}"
+  --top-k "${TOP_K:-20}" \
+  "${HARBOR_EXTRA_CONFIG_ARGS[@]}"
 
 "$REPO_ROOT/.venv/bin/python" -m terminal_agent_demo.terminal_experiment summarize-harbor \
   --jobs-dir "$JOBS_DIR" \
