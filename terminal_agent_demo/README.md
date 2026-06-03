@@ -112,7 +112,7 @@ Teacher-answer RL:
 terminal_agent_demo/teacher_answer_rl/run.sh
 ```
 
-The default/best teacher-answer-RL training recipe is
+The default teacher-answer-RL training recipe is
 `terminal_agent_demo/teacher_answer_rl/config.yaml`, matching
 `terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix_short_n4.yaml`.
 It is the domain-general likelihood recipe: the student samples a partial next
@@ -316,27 +316,17 @@ training reward improved across 10-step windows from 0.183742 at steps 1-10 to
 step 19 and 24/100 at step 39. The table below uses the step-39 checkpoint,
 reached at 7527.63s / 2.09h, for the complete 100-trial external Harbor eval.
 
-The current best TA-RL eval recipe uses the domain-general likelihood step-39
-checkpoint with guarded task-scoped eval repairs enabled via
-`TERMINUS_TOOL_ENABLE_TASK_REMINDERS=1`. The 32/100 combined score is computed
-from the complete prior 100-trial TA-RL eval plus the targeted regex repair:
-`regex-log` was validated as 5/5, replacing its previous 0/5 and moving the
-easy-10 score from 20/50 to 25/50 while the additional-10 score remains 7/50.
-The targeted validation jobs used reasoning disabled
-(`ENABLE_REASONING=0`, `TERMINUS_TOOL_ENABLE_THINKING=0`). A training-time
-curve check on the `lr2e9_easycont` checkpoints is nondecreasing after the same
-guarded repairs: 4/20 at step 4, 4/20 at step 9, and 6/20 at step 14.
-
-Validation artifact names: `likgs39-regex-normalize1-nothink-a5-c1-o4096-20260603`
-for the 5/5 regex repair, `ta_lr2e9_easycont_gs4_regex_fallback2_a1_20260603`
-and `ta_lr2e9_easycont_gs9_regex_fallback2_a1_20260603` for the early curve
-regex repairs, and `ta_lr2e9_easycont_gs14_portfolio_fallback1_a1_20260603` for
-the step-14 portfolio repair.
+The current default TA-RL training recipe is the domain-general likelihood
+step-39 recipe. Under the true comparable evaluator, without task-scoped
+repairs or evaluator-side task solutions, it scores 27/100: 20/50 on easy-10
+and 7/50 on additional-10. Its held-out eval-over-training checks were not
+consistently improving under this true evaluator, so the 27/100 row below is the
+comparable result to use against other recipes.
 
 | Model | Training data | Train runtime | Easy-10 old eval | Additional-10 new eval | Combined score |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Domain-general likelihood TA-RL default/best, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 25/50 | 7/50 | 32/100 |
 | Hand-crafted turn/action TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 21/50 | 6/50 | 27/100 |
+| Domain-general likelihood TA-RL default, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 20/50 | 7/50 | 27/100 |
 | GRPO default/best, easy-selected | `terminal_synthetic_tasks/easy/manifest.csv` | 2.09h | 17/50 | 7/50 | 24/100 |
 | Hand-crafted turn/action TA-RL, mixed final | `skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl` | 3.28h | 15/50 | 3/50 | 18/100 |
 | Domain-general likelihood TA-RL, mixed final | `skill_based_mixed_easy50_medium_odd50.terminus_tool.jsonl` | 3.35h | 10/50 | 1/50 | 11/100 |
