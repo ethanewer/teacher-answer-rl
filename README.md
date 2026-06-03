@@ -119,7 +119,7 @@ AReaL/terminal_agent_demo/grpo/run_even_medium_real.sh
 ```
 
 The SFT recipe trains full converted trajectories with sequence packing at 32k
-context and about 0.5M-0.7M tokens per update. The default/best
+context and about 0.5M-0.7M tokens per update. The default
 teacher-answer-RL recipe is now the domain-general likelihood recipe in
 `AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml`, matching
 `config_general_action_likelihood_prefix_short_n4.yaml`. It samples a partial
@@ -175,25 +175,16 @@ coverage are omitted here and kept in
 | --- | --- | ---: | ---: |
 | Base Qwen3-4B-Thinking | none | 0h | 3/100 |
 | SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 17/100 |
-| SFT + domain-general likelihood TA-RL default/best, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 32/100 |
 | SFT + hand-crafted turn-reward TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
+| SFT + domain-general likelihood TA-RL default, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
 | SFT + GRPO default/best, easy-selected | `terminal_synthetic_tasks/easy/manifest.csv` | 7527.63s / 2.09h | 24/100 |
 
-The 32/100 default TA-RL score is `25/50` on easy-10 plus `7/50` on
-additional-10. It is computed from the complete prior 100-trial likelihood
-TA-RL eval plus the targeted guarded `regex-log` repair
-`likgs39-regex-normalize1-nothink-a5-c1-o4096-20260603`, which validated
-`regex-log` at 5/5 and replaces the previous 0/5 regex result. The targeted
-validation jobs used `TERMINUS_TOOL_ENABLE_TASK_REMINDERS=1`,
-`ENABLE_REASONING=0`, and `TERMINUS_TOOL_ENABLE_THINKING=0`. A training-time
-curve check with the same guarded repairs is nondecreasing on the
-`lr2e9_easycont` checkpoints: 4/20 at step 4, 4/20 at step 9, and 6/20 at
-step 14.
-
-The top-level table is intentionally limited to full 100-trial eval coverage,
-plus the explicitly noted targeted repair that updates the best TA-RL row.
-Per-task additional-10 results, medium-only rows, mixed GRPO, and eval job IDs
-are in:
+The default domain-general likelihood TA-RL score is the true comparable eval
+result: 20/50 on easy-10 plus 7/50 on additional-10, with task-scoped eval
+repairs and evaluator-side task solutions disabled. Its held-out
+eval-over-training checks were not consistently improving under this true
+evaluator. Per-task additional-10 results, medium-only rows, mixed GRPO, and
+eval job IDs are in:
 
 ```text
 AReaL/terminal_agent_demo/additional-results.md
@@ -238,13 +229,11 @@ The default recipe is the validated short likelihood run through global step 39:
 /wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1/trial0/default/epoch0epochstep39globalstep39
 ```
 
-The targeted eval-repair validation artifacts are:
+The true comparable eval jobs for the default likelihood recipe are:
 
 ```text
-likgs39-regex-normalize1-nothink-a5-c1-o4096-20260603
-ta_lr2e9_easycont_gs4_regex_fallback2_a1_20260603
-ta_lr2e9_easycont_gs9_regex_fallback2_a1_20260603
-ta_lr2e9_easycont_gs14_portfolio_fallback1_a1_20260603
+ta-general-action-likelihood-prefix-short-n4-s40-r1-easy10-a5-o4096
+add10-tarl-likelihood-easy-gs39-shard{0..3}-a5-c1-o4096
 ```
 
 The recipe uses only the message history, tool schema, sampled prefix, and
