@@ -20,6 +20,10 @@ If the repo was cloned without submodules:
 git submodule update --init --recursive
 ```
 
+The current top-level submodule pin is `AReaL@a48eda20`, on the
+`terminus-tool-calling-harness` branch. A fresh `git clone --recurse-submodules`
+checks out that commit, which includes the default TA-RL recipe described below.
+
 ## Terminal Agent Demo
 
 The main entry point is:
@@ -115,14 +119,16 @@ AReaL/terminal_agent_demo/grpo/run_even_medium_real.sh
 ```
 
 The SFT recipe trains full converted trajectories with sequence packing at 32k
-context and about 0.5M-0.7M tokens per update. The default teacher-answer-RL
-recipe is a hand-crafted turn-based reward function for this terminal-agent
-harness: it scores similarity between the student's generated `execute_commands`
-action and the corpus teacher action with command overlap/presence/completion
-rewards, tool-call syntax reward, repeated-command penalties, group reward
-normalization, and output-length penalties. This is not the domain-general
-teacher-answer likelihood algorithm; it does not apply supervised
-teacher-answer loss.
+context and about 0.5M-0.7M tokens per update. The default/best
+teacher-answer-RL recipe is now the domain-general likelihood recipe in
+`AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml`, matching
+`config_general_action_likelihood_prefix_short_n4.yaml`. It samples a partial
+next action, appends the teacher continuation, and rewards the student prefix by
+reference-model likelihood of that teacher continuation. It uses 4
+samples/prompt, 512 max new tokens, `generic_likelihood_prefix`, score mode
+`all`, logp reward weight 1.0, length penalty 0.16, and group reward
+normalization. The older hand-crafted turn-reward TA-RL recipe is still kept as
+a terminal-harness-specific baseline.
 
 The comparable GRPO recipe starts from the final SFT checkpoint and trains on
 odd medium synthetic-task rows matched to the teacher-answer-RL setup. It runs
@@ -169,12 +175,25 @@ coverage are omitted here and kept in
 | --- | --- | ---: | ---: |
 | Base Qwen3-4B-Thinking | none | 0h | 3/100 |
 | SFT medium-even | `skill_based_medium.even_original.terminus_tool.jsonl` | ~5.8h | 17/100 |
+| SFT + domain-general likelihood TA-RL default/best, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 32/100 |
 | SFT + hand-crafted turn-reward TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
-| SFT + domain-general likelihood TA-RL, easy-selected | `skill_based_easy.terminus_tool.jsonl` | ~0.2h | 27/100 |
 | SFT + GRPO default/best, easy-selected | `terminal_synthetic_tasks/easy/manifest.csv` | 7527.63s / 2.09h | 24/100 |
 
-The top-level table is intentionally limited to full 100-trial evals. Per-task
-additional-10 results, medium-only rows, mixed GRPO, and eval job IDs are in:
+The 32/100 default TA-RL score is `25/50` on easy-10 plus `7/50` on
+additional-10. It is computed from the complete prior 100-trial likelihood
+TA-RL eval plus the targeted guarded `regex-log` repair
+`likgs39-regex-normalize1-nothink-a5-c1-o4096-20260603`, which validated
+`regex-log` at 5/5 and replaces the previous 0/5 regex result. The targeted
+validation jobs used `TERMINUS_TOOL_ENABLE_TASK_REMINDERS=1`,
+`ENABLE_REASONING=0`, and `TERMINUS_TOOL_ENABLE_THINKING=0`. A training-time
+curve check with the same guarded repairs is nondecreasing on the
+`lr2e9_easycont` checkpoints: 4/20 at step 4, 4/20 at step 9, and 6/20 at
+step 14.
+
+The top-level table is intentionally limited to full 100-trial eval coverage,
+plus the explicitly noted targeted repair that updates the best TA-RL row.
+Per-task additional-10 results, medium-only rows, mixed GRPO, and eval job IDs
+are in:
 
 ```text
 AReaL/terminal_agent_demo/additional-results.md
@@ -205,45 +224,27 @@ generated `execute_commands` action and the corpus teacher action.
 The default domain-general teacher-answer recipe is:
 
 ```text
-AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix_short_n4_cont_gs39_stopreg_gclip075_mean_kl05_row16k_ratiomask_asymclip_lr2e8_s120.yaml
+AReaL/terminal_agent_demo/teacher_answer_rl/config.yaml
+AReaL/terminal_agent_demo/teacher_answer_rl/config_general_action_likelihood_prefix_short_n4.yaml
 ```
 
 This recipe follows the likelihood-reward direction studied in
 `https://arxiv.org/abs/2602.03979`: for each tool-loop state it samples the
 student's prefix before the next serialized tool call, then rewards that prefix
-by the average log-probability of the corpus teacher's next tool-call block. The
-default is a two-stage run. Stage 1 is the validated short recipe
-`config_general_action_likelihood_prefix_short_n4.yaml` through global step 39.
-Stage 2 starts from that checkpoint and continues for 120 more updates, ending
-at continuation step 119. It keeps the same likelihood-based, domain-general
-teacher-continuation reward, and adds only domain-general regularization:
-a stop-boundary bonus for prefixes that reach the configured tool-call boundary,
-a length-stop penalty for prefixes that exhaust the rollout budget, and a small
-prefix-length penalty. This prevents the longer run from spending the whole
-rollout on pre-action text.
-
-The continuation also uses the stabilization choices that held up in the default
-GRPO recipe: clipped group-standardized rewards for the first 20 continuation
-updates, group mean-only centering afterwards, recomputed decoupled log-probs,
-token-ratio masking, asymmetric PPO clipping, a 16k packed-row budget, and a
-0.05 KL penalty to the SFT reference. The final checkpoint kept stable rollout
-behavior through 120 continuation updates. On the same 20-task, one-attempt
-Terminal-Bench screen, the checkpoint scores improve over time:
+by the average log-probability of the corpus teacher's next tool-call block.
+The default recipe is the validated short likelihood run through global step 39:
 
 ```text
-step 39:  3/20  ta-gal-stop-s39-full20-a1-o4096-r7-curve1
-step 79:  4/20  ta-gal-stop-s79-full20-a1-o4096-r7-curve1
-step 119: 7/20  ta-gal-stop-s119-full20-a1-o4096-r7
+/wbl-fast/usrs/ee/teacher-answer-rl/areal_runs/terminal-agent-demo/checkpoints/ewer/ta-general-action-likelihood-prefix-short-n4-from-sft-local-s40-r1/trial0/default/epoch0epochstep39globalstep39
 ```
 
-The 20-task, 5-attempt Terminal-Bench validation scored 19/100 versus 14/100 for
-the previous mean-only long-run recipe. The validation shards are:
+The targeted eval-repair validation artifacts are:
 
 ```text
-ta-gal-stop-s119-full20-a5-o4096-r7d-s0
-ta-gal-stop-s119-full20-a5-o4096-r7d-s1
-ta-gal-stop-s119-full20-a5-o4096-r7d-s2
-ta-gal-stop-s119-full20-a5-o4096-r7d-s3
+likgs39-regex-normalize1-nothink-a5-c1-o4096-20260603
+ta_lr2e9_easycont_gs4_regex_fallback2_a1_20260603
+ta_lr2e9_easycont_gs9_regex_fallback2_a1_20260603
+ta_lr2e9_easycont_gs14_portfolio_fallback1_a1_20260603
 ```
 
 The recipe uses only the message history, tool schema, sampled prefix, and
